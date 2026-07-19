@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Privacy-first local expense tracker with LLM-powered statement parsing">
+    <title>{% block title %}Expense Tracker{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <script src="/static/charts.js" defer></script>
+</head>
+<body>
+    <div class="app-shell">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-icon">💰</div>
+                <h1>ExpenseTracker</h1>
+            </div>
+
+            <a href="/" class="nav-link {% if request.url.path == '/' %}active{% endif %}">
+                <span class="nav-icon">📊</span>
+                Dashboard
+            </a>
+            <a href="/upload" class="nav-link {% if request.url.path == '/upload' %}active{% endif %}">
+                <span class="nav-icon">📄</span>
+                Upload Statements
+            </a>
+            <a href="/transactions" class="nav-link {% if request.url.path == '/transactions' %}active{% endif %}">
+                <span class="nav-icon">📋</span>
+                Transactions
+            </a>
+            <a href="/rules" class="nav-link {% if request.url.path == '/rules' %}active{% endif %}">
+                <span class="nav-icon">🏷️</span>
+                Category Rules
+            </a>
+
+            <div class="sidebar-footer">
+                <div class="ollama-status">
+                    <span class="status-dot {% if ollama_status|default(true) %}online{% else %}offline{% endif %}"></span>
+                    Ollama {% if ollama_status|default(true) %}Connected{% else %}Offline{% endif %}
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+</body>
+</html>

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Category Rules — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Category Rules</h2>
+    <p>Map merchant keywords to budget categories for automatic classification</p>
+</div>
+
+<!-- Add rule form -->
+<div class="card animate-in" style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 1rem;">
+        Add New Rule
+    </h3>
+    <form class="form-row"
+          hx-post="/rules"
+          hx-target="#rules-table-body"
+          hx-swap="innerHTML"
+          hx-on::after-request="this.reset()">
+        <div class="form-group">
+            <label>Pattern (keyword)</label>
+            <input type="text" name="pattern" placeholder="e.g. AMZN, SWIGGY" required>
+        </div>
+        <div class="form-group">
+            <label>Category</label>
+            <input type="text" name="category" placeholder="e.g. Shopping, Food" required>
+        </div>
+        <div class="form-group">
+            <label>Merchant Name (optional)</label>
+            <input type="text" name="cleaned_merchant" placeholder="e.g. Amazon, Swiggy">
+        </div>
+        <button type="submit" class="btn btn-primary">Add Rule</button>
+    </form>
+</div>
+
+<!-- Apply all rules -->
+<div style="margin-bottom: 1.5rem; display: flex; gap: 1rem; align-items: center;">
+    <button class="btn btn-ghost"
+            hx-post="/rules/apply"
+            hx-target="#rules-table-body"
+            hx-swap="innerHTML">
+        🔄 Re-apply All Rules
+    </button>
+    <span id="apply-feedback" style="font-size: 0.85rem; color: var(--text-muted);"></span>
+</div>
+
+<!-- Rules table -->
+<div class="card">
+    {% if rules|length > 0 %}
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Pattern</th>
+                    <th>Category</th>
+                    <th>Merchant Name</th>
+                    <th style="text-align: center;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="rules-table-body">
+                {% include "partials/rule_row.html" %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div id="rules-table-body">
+        <div class="empty-state">
+            <div class="empty-icon">🏷️</div>
+            <h3>No rules yet</h3>
+            <p>Add a pattern above to automatically categorize transactions.</p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

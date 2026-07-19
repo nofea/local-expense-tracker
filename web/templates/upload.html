@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Upload Statements — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Upload Statements</h2>
+    <p>Drop your PDF or CSV bank statements for automatic parsing</p>
+</div>
+
+<div class="card animate-in">
+    <form hx-post="/upload"
+          hx-encoding="multipart/form-data"
+          hx-target="#upload-result"
+          hx-swap="innerHTML"
+          hx-indicator="#upload-spinner">
+
+        <!-- Drop zone -->
+        <div class="upload-zone" id="drop-zone">
+            <div class="upload-icon">📁</div>
+            <h3>Drag & drop your statement here</h3>
+            <p>Supports PDF and CSV files</p>
+            <input type="file" name="file" accept=".pdf,.csv" required>
+        </div>
+
+        <!-- Model selector -->
+        <div class="model-selector">
+            <label for="model-select">🤖 LLM Model:</label>
+            <select name="model" id="model-select">
+                {% if models|length > 0 %}
+                    {% for m in models %}
+                    <option value="{{ m.name }}">{{ m.name }}</option>
+                    {% endfor %}
+                {% else %}
+                    <option value="llama3.1">llama3.1 (default)</option>
+                {% endif %}
+            </select>
+
+            {% if not ollama_available %}
+            <span style="color: var(--expense); font-size: 0.82rem;">
+                ⚠ Ollama is not reachable at localhost:11434
+            </span>
+            {% endif %}
+        </div>
+
+        <!-- Submit -->
+        <div style="margin-top: 1.5rem; display: flex; align-items: center; gap: 1rem;">
+            <button type="submit" class="btn btn-primary">
+                🚀 Process Statement
+            </button>
+            <span id="upload-spinner" class="htmx-indicator">
+                <span class="spinner"></span>
+                <span style="margin-left: 0.5rem; color: var(--text-muted); font-size: 0.88rem;">
+                    Processing with LLM…
+                </span>
+            </span>
+        </div>
+    </form>
+
+    <!-- Result area (populated by HTMX) -->
+    <div id="upload-result"></div>
+</div>
+
+<div class="card animate-in" style="margin-top: 1.5rem;">
+    <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.75rem;">
+        How it works
+    </h3>
+    <div style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.8;">
+        <p>1️⃣ Upload a PDF or CSV bank/credit card statement</p>
+        <p>2️⃣ Select the Ollama model to use for extraction</p>
+        <p>3️⃣ The LLM extracts transactions with dates, descriptions, and amounts</p>
+        <p>4️⃣ Duplicate detection prevents double-counting overlapping statements</p>
+        <p>5️⃣ Categorization rules are automatically applied to new transactions</p>
+    </div>
+</div>
+{% endblock %}

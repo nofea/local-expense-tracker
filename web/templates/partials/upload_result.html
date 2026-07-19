@@ -1,0 +1,31 @@
+{% if result %}
+<div class="upload-result success">
+    <h4>✅ Processing Complete — {{ result.source_file }}</h4>
+    <div class="result-stats">
+        <div class="result-stat">
+            <strong>{{ result.total_extracted }}</strong> extracted
+        </div>
+        <div class="result-stat">
+            <strong>{{ result.new_inserted }}</strong> new
+        </div>
+        <div class="result-stat">
+            <strong>{{ result.duplicates_skipped }}</strong> duplicates skipped
+        </div>
+    </div>
+    {% if result.errors|length > 0 %}
+    <div style="margin-top: 0.75rem; font-size: 0.85rem; color: var(--warning);">
+        {% for err in result.errors %}
+        <p>⚠ {{ err }}</p>
+        {% endfor %}
+    </div>
+    {% endif %}
+    <div style="margin-top: 1rem;">
+        <a href="/transactions" class="btn btn-ghost btn-sm">View Transactions →</a>
+    </div>
+</div>
+{% elif error %}
+<div class="upload-result error">
+    <h4>❌ Processing Failed</h4>
+    <p style="margin-top: 0.5rem; font-size: 0.9rem;">{{ error }}</p>
+</div>
+{% endif %}

@@ -1,0 +1,148 @@
+/* ======================================================================
+   Expense Tracker TUI — Textual CSS
+   ====================================================================== */
+
+Screen {
+    background: #0b0e17;
+}
+
+/* --- Layout containers --- */
+#dashboard-container, #transactions-container {
+    padding: 1 2;
+}
+
+/* --- Stats row --- */
+#stats-row {
+    height: 7;
+    margin: 1 0;
+}
+
+StatCard {
+    width: 1fr;
+    height: 100%;
+    border: solid #1e293b;
+    padding: 1 2;
+    margin: 0 1;
+    content-align: center middle;
+}
+
+.income-card {
+    border: solid #34d399 30%;
+    background: #0a2018;
+}
+
+.expense-card {
+    border: solid #f87171 30%;
+    background: #200a0a;
+}
+
+.savings-card {
+    border: solid #60a5fa 30%;
+    background: #0a1420;
+}
+
+.warning-card {
+    border: solid #fbbf24 30%;
+    background: #201a0a;
+}
+
+.stat-title {
+    color: #64748b;
+    text-style: bold;
+}
+
+.stat-value {
+    color: #f1f5f9;
+    text-style: bold;
+}
+
+.income-card .stat-value {
+    color: #34d399;
+}
+
+.expense-card .stat-value {
+    color: #f87171;
+}
+
+.savings-card .stat-value {
+    color: #60a5fa;
+}
+
+.warning-card .stat-value {
+    color: #fbbf24;
+}
+
+/* --- Section titles --- */
+.screen-title {
+    color: #818cf8;
+    text-style: bold;
+    padding: 1 0 0 0;
+}
+
+.section-title {
+    color: #94a3b8;
+    text-style: bold;
+    padding: 1 0 0 0;
+}
+
+/* --- Category bars --- */
+#category-bars {
+    margin: 1 0;
+    height: auto;
+    max-height: 20;
+}
+
+CategoryBar {
+    height: 1;
+    color: #a78bfa;
+}
+
+/* --- Data table --- */
+#txn-table {
+    margin: 1 0;
+    height: 1fr;
+}
+
+DataTable {
+    background: #0b0e17;
+}
+
+DataTable > .datatable--header {
+    background: #111827;
+    color: #64748b;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #1e1b4b;
+    color: #f1f5f9;
+}
+
+/* --- Footer text --- */
+.footer-text {
+    color: #64748b;
+    padding: 0 0 1 0;
+}
+
+.muted-text {
+    color: #475569;
+}
+
+/* --- Header & Footer widgets --- */
+Header {
+    background: #111827;
+    color: #818cf8;
+}
+
+Footer {
+    background: #111827;
+}
+
+FooterKey {
+    background: #1e293b;
+    color: #94a3b8;
+}
+
+Footer > .footer--highlight {
+    background: #4f46e5;
+}

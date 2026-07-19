@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Dashboard</h2>
+    <p>Your financial overview at a glance</p>
+</div>
+
+<!-- Month navigation -->
+<div class="month-nav">
+    {% set prev_month = month - 1 if month > 1 else 12 %}
+    {% set prev_year = year if month > 1 else year - 1 %}
+    {% set next_month = month + 1 if month < 12 else 1 %}
+    {% set next_year = year if month < 12 else year + 1 %}
+    <a href="/?year={{ prev_year }}&month={{ prev_month }}" class="nav-arrow">◀</a>
+    <span class="current-month">{{ month_name }}</span>
+    <a href="/?year={{ next_year }}&month={{ next_month }}" class="nav-arrow">▶</a>
+</div>
+
+<!-- Stats cards -->
+<div class="stats-grid animate-in">
+    <div class="card stat-card income">
+        <div class="stat-label">Total Income</div>
+        <div class="stat-value">₹{{ "{:,.0f}".format(summary.total_income) }}</div>
+        <div class="stat-icon">📈</div>
+    </div>
+    <div class="card stat-card expense">
+        <div class="stat-label">Total Expenses</div>
+        <div class="stat-value">₹{{ "{:,.0f}".format(summary.total_expense) }}</div>
+        <div class="stat-icon">📉</div>
+    </div>
+    <div class="card stat-card savings">
+        <div class="stat-label">Net Savings</div>
+        <div class="stat-value">₹{{ "{:,.0f}".format(summary.net_savings) }}</div>
+        <div class="stat-icon">💎</div>
+    </div>
+    <div class="card stat-card uncategorized">
+        <div class="stat-label">Uncategorized</div>
+        <div class="stat-value">{{ uncategorized }}</div>
+        <div class="stat-icon">🏷️</div>
+    </div>
+</div>
+
+<!-- Charts -->
+<div class="charts-grid animate-in">
+    <!-- Category Breakdown -->
+    <div class="card chart-container">
+        <h3>Spending by Category</h3>
+        <div class="chart-area" id="category-chart">
+            {% if breakdown|length == 0 %}
+            <div class="empty-state">
+                <p>No expense data for this month</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Monthly Trend -->
+    <div class="card chart-container">
+        <h3>Monthly Trend (6 months)</h3>
+        <div class="chart-area" id="trend-chart">
+            {% if trend|length == 0 %}
+            <div class="empty-state">
+                <p>No trend data available</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Top Merchants -->
+{% if top_merchants|length > 0 %}
+<div class="card animate-in" style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 1rem;">Top Merchants</h3>
+    <div class="merchants-list">
+        {% for m in top_merchants %}
+        <div class="merchant-row">
+            <span class="merchant-name">{{ m.merchant }}</span>
+            <span class="merchant-amount">₹{{ "{:,.0f}".format(m.total) }}</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Inline chart rendering -->
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const breakdownData = {{ breakdown | tojson }};
+    renderDonutChart('category-chart', breakdownData);
+
+    const trendData = {{ trend | tojson }};
+    renderTrendChart('trend-chart', trendData);
+});
+</script>
+{% endblock %}
