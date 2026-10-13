@@ -1,0 +1,33 @@
+{# Inline editor for one transaction (§6 manual edit). Saving marks it manual. #}
+<tr id="tx-{{ tx.id }}" class="is-editing">
+    <td style="white-space:nowrap;">{{ tx.transaction_date }}</td>
+    <td>
+        <div class="muted-line" title="{{ tx.raw_description }}">{{ tx.raw_description }}</div>
+        <input type="text" name="cleaned_merchant" value="{{ tx.cleaned_merchant or '' }}"
+               placeholder="Merchant name (optional)" class="cell-input" aria-label="Merchant name">
+    </td>
+    <td>
+        <input type="text" name="category" value="{{ tx.category }}" list="category-options-{{ tx.id[:12] }}"
+               class="cell-input" aria-label="Category" required>
+        <datalist id="category-options-{{ tx.id[:12] }}">
+            {% for c in categories %}<option value="{{ c }}">{% endfor %}
+        </datalist>
+        <label class="checkbox-label" style="color:var(--text-secondary); margin-top:0.35rem;">
+            <input type="checkbox" name="is_transfer" value="true" {{ 'checked' if tx.is_transfer }}>
+            Transfer (exclude from totals)
+        </label>
+    </td>
+    <td style="text-align:right; white-space:nowrap;">
+        <span class="{{ 'amount-positive' if tx.amount_minor >= 0 else 'amount-negative' }}">{{ tx.amount_minor | money }}</span>
+    </td>
+    <td style="font-size:0.8rem; color:var(--text-muted);">{{ tx.source_file }}</td>
+    <td class="row-actions">
+        <button class="btn btn-primary btn-sm" hx-post="/transactions/{{ tx.id }}" hx-include="closest tr"
+                hx-target="closest tr" hx-swap="outerHTML">Save</button>
+        <button class="btn btn-ghost btn-sm" hx-get="/transactions/{{ tx.id }}/row"
+                hx-target="closest tr" hx-swap="outerHTML">Cancel</button>
+        <a class="btn btn-ghost btn-sm"
+           href="/rules?{{ {'pattern': tx.raw_description, 'category': tx.category, 'cleaned_merchant': tx.cleaned_merchant or ''} | urlencode }}"
+           title="Open the rules page with this description prefilled">Create rule…</a>
+    </td>
+</tr>

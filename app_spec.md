@@ -267,7 +267,7 @@ id         = sha256(f"{account_id}|{transaction_date}|{norm(desc)}|{amount_minor
   * If one exists, set `category`, `rule_id` and `category_source='rule'`. Set `cleaned_merchant` to the rule's value, which is NULL when the rule has none; on non-manual rows the merchant name only ever comes from a rule. Set `is_transfer=1` if `mark_transfer` is set.
   * If no rule matches and `category_source='rule'`, revert to `Uncategorized`, set `category_source='default'`, and set `rule_id` and `cleaned_merchant` to NULL. Deleting a rule therefore undoes its effect.
   * The engine never clears `is_transfer`, because the flag can also be set by the user in review. Removing a `mark_transfer` rule leaves the flags it set in place.
-* **Manual edits** (category, merchant or transfer flag on a single transaction) set `category_source='manual'`, and rules never override them. "Reset to rules" sets the row back to `default` and re-runs the engine.
+* **Manual edits** (category, merchant or transfer flag on a single transaction) set `category_source='manual'`, and rules never override them. "Reset to rules" sets the row back to `default` and re-runs the engine. Reset also clears the merchant name and the transfer flag, because the database doesn't record whether the flag came from review or from the manual edit; a `mark_transfer` rule sets it again.
 * From a manual edit, the UI offers "create rule from this", which prefills `pattern` with the description.
 * The rule editor shows a live match count for the pattern before saving.
 
@@ -369,7 +369,7 @@ Each phase is done when its tests pass with `python -m unittest discover tests`.
 
 ## Appendix A: Implementation Gap Checklist (code as of `3c9b5f7`)
 
-Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10) and `tests/test_config_and_llm.py` (items 20 and 22–24).
+Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10) `tests/test_config_and_llm.py` (items 20 and 22–24) and `tests/test_ledger_editing.py` (items 14, 15 and 17).
 
 1. ✅ 🔴 **Path traversal / overwrite on upload.** `web/app.py::upload_file` writes to `uploads/<client filename>` without sanitizing it. Fix: §3.1 and §9.6.
 2. ✅ 🔴 **Trend skips or duplicates months.** `core/analytics.py::get_monthly_trend` subtracts `i*30` days (e.g. Mar 1 − 30d = Jan 30, so Feb is missing). Fix: calendar month arithmetic (§8).
@@ -384,10 +384,10 @@ Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = mi
 11. 🟠 **CSV always goes through the LLM.** Add `csv_mappings` and a deterministic parser (§3.2).
 12. 🟠 **Password-protected PDFs** are not supported (§3.2).
 13. ✅ 🟠 **Rules engine semantics.** `database.apply_rules` overwrites every match, orders rules alphabetically, and never reverts. Its WHERE clause `(category='Uncategorized' OR category != ?)` reduces to `category != ?`. Fix: rewrite per §6. Done in `database._run_rules_engine`. Deleting a rule now re-runs the engine.
-14. 🟠 **No manual edit or delete of transactions** in either UI. `database.delete_transaction` exists but no route or UI calls it.
-15. ◐ 🟠 **No imports page and no undo for an import** (§7.1). The `/imports` list and discard-in-review exist. Deleting a committed import is still missing.
+14. ◐ 🟠 **No manual edit or delete of transactions** in either UI. `database.delete_transaction` exists but no route or UI calls it. Done in the web UI: each transaction row can be edited in place (category, merchant and transfer flag, saved as `manual`), reset to rules, or deleted, and the editor has a "Create rule…" link that prefills the rules form. The transactions list also gained the §7.1 "uncategorized only" and "transfers" filters. The TUI side is item 18.
+15. ✅ 🟠 **No imports page and no undo for an import** (§7.1). The `/imports` list and discard-in-review exist. `/imports` can now delete a committed import, cascading to its transactions, after a confirmation. It can also remove failed or discarded imports. Running jobs can't be deleted. Afterwards the same file can be uploaded again.
 16. ✅ 🟠 **Transfers are counted as income and expense** in all analytics (§8). The analytics queries now filter on `is_transfer = 0`. There is no UI to flag a transfer yet, except a `mark_transfer` rule.
-17. 🟠 **Uncategorized count is global**, not per month, and doesn't link anywhere (§8, §7.1).
+17. ✅ 🟠 **Uncategorized count is global**, not per month, and doesn't link anywhere (§8, §7.1). The count is now per month and links to `/transactions?year=…&month=…&uncategorized=1`. The TUI dashboard uses the per-month count too.
 18. 🟠 **TUI gaps.** No page keys, so only the first 50 rows per month are reachable. Dashboard is fixed to the current month. No search, category edit, transfer toggle or account filter (§7.2).
 19. ✅ 🟠 **Uploads retained forever** in `uploads/`. Fix: delete after extraction (§3.2, §9.3). The worker deletes the file as soon as its text is read, on success and failure alike.
 20. ✅ 🟡 **Config scattered.** The model is hardcoded in `ollama_client.DEFAULT_MODEL` and again in `web/app.py` `Form("llama3.1")`. `₹` / `INR` are hardcoded in `tui/screens/*.py`, `web/templates/*.html` and `web/static/charts.js`. Fix: `config.toml` (§1.1). Done in `core/config.py`. Money formatting is shared by both UIs (`models.format_money`), and the charts read the currency from `<body data-currency>`. The §9.1 and §9.7 warnings for non-local hosts are done too (startup log, plus a UI banner for the LLM host).

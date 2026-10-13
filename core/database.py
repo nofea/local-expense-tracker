@@ -172,7 +172,15 @@ def _filters(
     month: Optional[int],
     category: Optional[str],
     search: Optional[str],
+    uncategorized: bool = False,
+    transfers: str = "show",
 ) -> tuple[str, list[object]]:
+    """WHERE clause for the transaction list.
+
+    *uncategorized* matches the dashboard's definition (§8): non-transfer
+    rows still in ``Uncategorized``.  *transfers* is ``show``, ``hide`` or
+    ``only``.
+    """
     clauses: list[str] = []
     params: list[object] = []
 
@@ -191,6 +199,14 @@ def _filters(
         clauses.append("(t.raw_description LIKE ? OR t.cleaned_merchant LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%"])
 
+    if uncategorized:
+        clauses.append("t.category = 'Uncategorized' AND t.is_transfer = 0")
+
+    if transfers == "hide":
+        clauses.append("t.is_transfer = 0")
+    elif transfers == "only":
+        clauses.append("t.is_transfer = 1")
+
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -201,12 +217,14 @@ def get_transactions(
     month: Optional[int] = None,
     category: Optional[str] = None,
     search: Optional[str] = None,
+    uncategorized: bool = False,
+    transfers: str = "show",
     limit: int = 50,
     offset: int = 0,
 ) -> list[TransactionRecord]:
     """Fetch transactions with optional filters, newest first."""
     conn = connect(db_path)
-    where, params = _filters(year, month, category, search)
+    where, params = _filters(year, month, category, search, uncategorized, transfers)
     sql = (
         "SELECT t.*, s.file_name AS source_file "
         "FROM transactions t JOIN statements s ON s.id = t.statement_id"
@@ -230,12 +248,84 @@ def get_transaction_count(
     month: Optional[int] = None,
     category: Optional[str] = None,
     search: Optional[str] = None,
+    uncategorized: bool = False,
+    transfers: str = "show",
 ) -> int:
     """Count transactions with optional filters."""
     conn = connect(db_path)
-    where, params = _filters(year, month, category, search)
+    where, params = _filters(year, month, category, search, uncategorized, transfers)
     try:
         return conn.execute(f"SELECT COUNT(*) FROM transactions t{where}", params).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def get_transaction(
+    tx_id: str, db_path: Optional[str | Path] = None
+) -> Optional[TransactionRecord]:
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT t.*, s.file_name AS source_file "
+            "FROM transactions t JOIN statements s ON s.id = t.statement_id WHERE t.id = ?",
+            (tx_id,),
+        ).fetchone()
+        return TransactionRecord(**dict(row)) if row else None
+    finally:
+        conn.close()
+
+
+def set_manual_category(
+    tx_id: str,
+    *,
+    category: str,
+    cleaned_merchant: Optional[str],
+    is_transfer: bool,
+    db_path: Optional[str | Path] = None,
+) -> bool:
+    """Apply a user edit (§6): the row becomes ``manual`` and rules never
+    touch it again until :func:`reset_to_rules`.  Returns False if the
+    transaction does not exist."""
+    category = " ".join(category.split()) or "Uncategorized"
+    merchant = " ".join((cleaned_merchant or "").split()) or None
+    conn = connect(db_path)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE transactions
+            SET category = ?, cleaned_merchant = ?, is_transfer = ?,
+                category_source = 'manual', rule_id = NULL
+            WHERE id = ?
+            """,
+            (category, merchant, int(is_transfer), tx_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def reset_to_rules(tx_id: str, db_path: Optional[str | Path] = None) -> bool:
+    """Undo manual edits on one row and let the rules engine decide again.
+
+    The transfer flag is cleared too (a ``mark_transfer`` rule sets it
+    again), since there is no record of whether it came from review or from
+    the manual edit.
+    """
+    conn = connect(db_path)
+    try:
+        cur = conn.execute(
+            """
+            UPDATE transactions
+            SET category = 'Uncategorized', cleaned_merchant = NULL, is_transfer = 0,
+                category_source = 'default', rule_id = NULL
+            WHERE id = ?
+            """,
+            (tx_id,),
+        )
+        _run_rules_engine(conn)
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

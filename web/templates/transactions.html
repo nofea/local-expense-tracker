@@ -34,6 +34,18 @@
             {% endfor %}
         </select>
     </div>
+    <div class="form-group" style="max-width:150px;">
+        <label for="transfers-filter">Transfers</label>
+        <select name="transfers" id="transfers-filter">
+            <option value="show" {% if filter_transfers == 'show' %}selected{% endif %}>Show</option>
+            <option value="hide" {% if filter_transfers == 'hide' %}selected{% endif %}>Hide</option>
+            <option value="only" {% if filter_transfers == 'only' %}selected{% endif %}>Only transfers</option>
+        </select>
+    </div>
+    <label class="checkbox-label" style="color:var(--text-secondary); align-self:flex-end; margin-bottom:0.6rem;">
+        <input type="checkbox" name="uncategorized" value="1" {% if filter_uncategorized %}checked{% endif %}>
+        Uncategorized only
+    </label>
     <div class="form-group search-group">
         <label>Search</label>
         <input type="text" name="search" placeholder="Search descriptions…"
@@ -55,24 +67,12 @@
                     <th>Category</th>
                     <th style="text-align:right;">Amount</th>
                     <th>Source</th>
+                    <th><span class="sr-only">Actions</span></th>
                 </tr>
             </thead>
             <tbody>
                 {% for tx in transactions %}
-                <tr class="animate-in" style="animation-delay: {{ loop.index * 20 }}ms;">
-                    <td style="white-space:nowrap;">{{ tx.transaction_date }}</td>
-                    <td style="max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
-                        title="{{ tx.raw_description }}">
-                        {{ tx.cleaned_merchant or tx.raw_description }}
-                    </td>
-                    <td><span class="category-badge">{{ tx.category }}</span></td>
-                    <td style="text-align:right;">
-                        <span class="{{ 'amount-positive' if tx.amount >= 0 else 'amount-negative' }}">
-                            {{ tx.amount_minor | money }}
-                        </span>
-                    </td>
-                    <td style="font-size:0.8rem; color:var(--text-muted);">{{ tx.source_file }}</td>
-                </tr>
+                {% include "partials/tx_row.html" %}
                 {% endfor %}
             </tbody>
         </table>
@@ -82,7 +82,7 @@
     {% if total_pages > 1 %}
     <div class="pagination">
         {% if page > 1 %}
-        <a href="/transactions?page={{ page - 1 }}{% if filter_year %}&year={{ filter_year }}{% endif %}{% if filter_month %}&month={{ filter_month }}{% endif %}{% if filter_category %}&category={{ filter_category }}{% endif %}{% if filter_search %}&search={{ filter_search }}{% endif %}">
+        <a href="/transactions?page={{ page - 1 }}{% if filter_qs %}&{{ filter_qs }}{% endif %}">
             ◀
         </a>
         {% endif %}
@@ -91,7 +91,7 @@
             {% if p == page %}
                 <span class="current">{{ p }}</span>
             {% elif p <= 3 or p > total_pages - 2 or (p >= page - 1 and p <= page + 1) %}
-                <a href="/transactions?page={{ p }}{% if filter_year %}&year={{ filter_year }}{% endif %}{% if filter_month %}&month={{ filter_month }}{% endif %}{% if filter_category %}&category={{ filter_category }}{% endif %}{% if filter_search %}&search={{ filter_search }}{% endif %}">
+                <a href="/transactions?page={{ p }}{% if filter_qs %}&{{ filter_qs }}{% endif %}">
                     {{ p }}
                 </a>
             {% elif p == 4 or p == total_pages - 2 %}
@@ -100,7 +100,7 @@
         {% endfor %}
 
         {% if page < total_pages %}
-        <a href="/transactions?page={{ page + 1 }}{% if filter_year %}&year={{ filter_year }}{% endif %}{% if filter_month %}&month={{ filter_month }}{% endif %}{% if filter_category %}&category={{ filter_category }}{% endif %}{% if filter_search %}&search={{ filter_search }}{% endif %}">
+        <a href="/transactions?page={{ page + 1 }}{% if filter_qs %}&{{ filter_qs }}{% endif %}">
             ▶
         </a>
         {% endif %}

@@ -88,7 +88,7 @@ class DashboardScreen(Screen):
     def _refresh_data(self) -> None:
         summary = get_monthly_summary(self._year, self._month)
         breakdown = get_category_breakdown(self._year, self._month)
-        uncategorized = get_uncategorized_count()
+        uncategorized = get_uncategorized_count(self._year, self._month)
 
         # Update stat cards
         cards = self.query(StatCard)

@@ -119,12 +119,16 @@ def get_monthly_trend(
 # Uncategorized count
 # ---------------------------------------------------------------------------
 
-def get_uncategorized_count(db_path: Optional[str | Path] = None) -> int:
+def get_uncategorized_count(
+    year: int, month: int, db_path: Optional[str | Path] = None
+) -> int:
+    """Non-transfer rows in the month still in ``Uncategorized`` (§8)."""
     conn = _conn(db_path)
     try:
         row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM transactions "
-            "WHERE category = 'Uncategorized' AND is_transfer = 0"
+            "WHERE transaction_date LIKE ? AND category = 'Uncategorized' AND is_transfer = 0",
+            (f"{year:04d}-{month:02d}-%",),
         ).fetchone()
         return row["cnt"]
     finally:

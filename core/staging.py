@@ -563,6 +563,26 @@ def commit(
     return CommitResult(inserted=inserted, duplicates=duplicates)
 
 
+def delete_import(statement_id: int, db_path: Optional[str | Path] = None) -> int:
+    """Delete a finished import and, through ``ON DELETE CASCADE``, every
+    transaction and staged row it owns (§7.1 "undo an import").
+
+    Refused while the job is still running.  Afterwards the same file can
+    be uploaded again.  Returns the number of transactions removed.
+    """
+    with _write_tx(db_path) as conn:
+        statement = conn.execute("SELECT status FROM statements WHERE id = ?", (statement_id,)).fetchone()
+        if statement is None:
+            raise ReviewError("Import not found.")
+        if statement["status"] in _INTERRUPTIBLE:
+            raise ReviewError("This import is still running. Wait for it to finish first.")
+        removed = conn.execute(
+            "SELECT COUNT(*) FROM transactions WHERE statement_id = ?", (statement_id,)
+        ).fetchone()[0]
+        conn.execute("DELETE FROM statements WHERE id = ?", (statement_id,))
+        return removed
+
+
 def discard(statement_id: int, db_path: Optional[str | Path] = None) -> None:
     """Drop a statement in review; its staged rows are deleted."""
     with _write_tx(db_path) as conn:

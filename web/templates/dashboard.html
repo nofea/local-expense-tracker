@@ -35,11 +35,13 @@
         <div class="stat-value">{{ summary.net_savings | currency(0) }}</div>
         <div class="stat-icon">💎</div>
     </div>
-    <div class="card stat-card uncategorized">
+    <a class="card stat-card uncategorized stat-link"
+       href="/transactions?year={{ year }}&month={{ month }}&uncategorized=1"
+       title="Show this month's uncategorized transactions">
         <div class="stat-label">Uncategorized</div>
         <div class="stat-value">{{ uncategorized }}</div>
         <div class="stat-icon">🏷️</div>
-    </div>
+    </a>
 </div>
 
 <!-- Charts -->

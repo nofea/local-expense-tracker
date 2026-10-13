@@ -10,9 +10,10 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -147,7 +148,7 @@ async def dashboard(
     summary = get_monthly_summary(y, m)
     breakdown = get_category_breakdown(y, m)
     trend = get_monthly_trend(6)
-    uncategorized = get_uncategorized_count()
+    uncategorized = get_uncategorized_count(y, m)
     top_merchants = get_top_merchants(y, m)
 
     return templates.TemplateResponse(
@@ -272,6 +273,20 @@ async def imports_page(request: Request):
         request=request,
         name="imports.html",
         context={"request": request, "imports": staging.list_imports()},
+    )
+
+
+@app.delete("/imports/{statement_id}", response_class=HTMLResponse)
+async def delete_import_route(request: Request, statement_id: int):
+    try:
+        removed = staging.delete_import(statement_id)
+        message, error = f"Import #{statement_id} deleted, with its {removed} transaction(s).", None
+    except staging.ReviewError as exc:
+        message, error = None, str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/imports_table.html",
+        context={"request": request, "imports": staging.list_imports(), "message": message, "error": error},
     )
 
 
@@ -402,23 +417,32 @@ async def transactions_page(
     month: Optional[int] = None,
     category: Optional[str] = None,
     search: Optional[str] = None,
+    uncategorized: bool = False,
+    transfers: str = "show",
     page: int = 1,
 ):
     per_page = 30
     page = max(1, page)
     if month is not None and not 1 <= month <= 12:
         month = None
+    if transfers not in ("show", "hide", "only"):
+        transfers = "show"
     offset = (page - 1) * per_page
 
-    txns = db.get_transactions(
-        year=year, month=month, category=category,
-        search=search, limit=per_page, offset=offset,
-    )
-    total = db.get_transaction_count(
+    filters = dict(
         year=year, month=month, category=category, search=search,
+        uncategorized=uncategorized, transfers=transfers,
     )
+    txns = db.get_transactions(**filters, limit=per_page, offset=offset)
+    total = db.get_transaction_count(**filters)
     categories = db.get_categories()
     total_pages = max(1, (total + per_page - 1) // per_page)
+    # Query string of the active filters, for pagination links.
+    filter_qs = urlencode({
+        k: (1 if v is True else v)
+        for k, v in filters.items()
+        if v not in (None, "", False) and not (k == "transfers" and v == "show")
+    })
 
     return templates.TemplateResponse(
         request=request,
@@ -435,8 +459,59 @@ async def transactions_page(
             "filter_month": month,
             "filter_category": category,
             "filter_search": search or "",
+            "filter_uncategorized": uncategorized,
+            "filter_transfers": transfers,
+            "filter_qs": filter_qs,
         },
     )
+
+
+def _tx_row(request: Request, tx_id: str, template: str = "partials/tx_row.html") -> HTMLResponse:
+    tx = db.get_transaction(tx_id)
+    if tx is None:
+        return HTMLResponse("Transaction not found", status_code=404)
+    return templates.TemplateResponse(
+        request=request,
+        name=template,
+        context={"request": request, "tx": tx, "categories": db.get_categories()},
+    )
+
+
+@app.get("/transactions/{tx_id}/row", response_class=HTMLResponse)
+async def transaction_row(request: Request, tx_id: str):
+    return _tx_row(request, tx_id)
+
+
+@app.get("/transactions/{tx_id}/edit", response_class=HTMLResponse)
+async def transaction_edit_row(request: Request, tx_id: str):
+    return _tx_row(request, tx_id, "partials/tx_row_edit.html")
+
+
+@app.post("/transactions/{tx_id}", response_class=HTMLResponse)
+async def update_transaction(
+    request: Request,
+    tx_id: str,
+    category: str = Form(""),
+    cleaned_merchant: str = Form(""),
+    is_transfer: bool = Form(False),
+):
+    db.set_manual_category(
+        tx_id, category=category, cleaned_merchant=cleaned_merchant, is_transfer=is_transfer
+    )
+    return _tx_row(request, tx_id)
+
+
+@app.post("/transactions/{tx_id}/reset", response_class=HTMLResponse)
+async def reset_transaction(request: Request, tx_id: str):
+    db.reset_to_rules(tx_id)
+    return _tx_row(request, tx_id)
+
+
+@app.delete("/transactions/{tx_id}")
+async def delete_transaction_route(tx_id: str):
+    if not db.delete_transaction(tx_id):
+        return HTMLResponse("Transaction not found", status_code=404)
+    return Response(status_code=200)  # empty body: HTMX removes the row
 
 
 # ---------------------------------------------------------------------------
@@ -444,10 +519,23 @@ async def transactions_page(
 # ---------------------------------------------------------------------------
 
 @app.get("/rules", response_class=HTMLResponse)
-async def rules_page(request: Request):
+async def rules_page(
+    request: Request,
+    pattern: str = "",
+    category: str = "",
+    cleaned_merchant: str = "",
+):
+    """Rules page; the query params prefill the form ("create rule from
+    this" on a transaction, §6)."""
     rules = db.get_rules()
     return templates.TemplateResponse(
-        request=request, name="rules.html", context={"request": request, "rules": rules}
+        request=request,
+        name="rules.html",
+        context={
+            "request": request,
+            "rules": rules,
+            "prefill": {"pattern": pattern, "category": category, "cleaned_merchant": cleaned_merchant},
+        },
     )
 
 

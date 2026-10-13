@@ -19,18 +19,24 @@
           hx-on::after-request="this.reset()">
         <div class="form-group">
             <label>Pattern (keyword)</label>
-            <input type="text" name="pattern" placeholder="e.g. AMZN, SWIGGY" required>
+            <input type="text" name="pattern" placeholder="e.g. AMZN, SWIGGY" value="{{ prefill.pattern }}" required>
         </div>
         <div class="form-group">
             <label>Category</label>
-            <input type="text" name="category" placeholder="e.g. Shopping, Food" required>
+            <input type="text" name="category" placeholder="e.g. Shopping, Food" value="{{ prefill.category if prefill.category != 'Uncategorized' else '' }}" required>
         </div>
         <div class="form-group">
             <label>Merchant Name (optional)</label>
-            <input type="text" name="cleaned_merchant" placeholder="e.g. Amazon, Swiggy">
+            <input type="text" name="cleaned_merchant" placeholder="e.g. Amazon, Swiggy" value="{{ prefill.cleaned_merchant }}">
         </div>
         <button type="submit" class="btn btn-primary">Add Rule</button>
     </form>
+    {% if prefill.pattern %}
+    <p class="muted-line" style="margin-top:0.75rem;">
+        The pattern is prefilled with the full description. Shorten it to the part that
+        identifies the merchant (for example <code>SWIGGY</code>), or it will only match this exact text.
+    </p>
+    {% endif %}
 </div>
 
 <!-- Apply all rules -->

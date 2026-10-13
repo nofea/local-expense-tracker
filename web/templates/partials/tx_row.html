@@ -1,0 +1,30 @@
+{# One transaction row; swapped in place by the edit/save/reset actions. #}
+<tr id="tx-{{ tx.id }}">
+    <td style="white-space:nowrap;">{{ tx.transaction_date }}</td>
+    <td style="max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+        title="{{ tx.raw_description }}">
+        {{ tx.cleaned_merchant or tx.raw_description }}
+    </td>
+    <td>
+        <span class="category-badge">{{ tx.category }}</span>
+        {% if tx.category_source == 'manual' %}<span class="badge badge-muted" title="Set by you; rules won't change it">manual</span>{% endif %}
+        {% if tx.is_transfer %}<span class="badge badge-warn" title="Excluded from income and expense totals">transfer</span>{% endif %}
+    </td>
+    <td style="text-align:right; white-space:nowrap;">
+        <span class="{{ 'amount-positive' if tx.amount_minor >= 0 else 'amount-negative' }}">{{ tx.amount_minor | money }}</span>
+    </td>
+    <td style="font-size:0.8rem; color:var(--text-muted);">{{ tx.source_file }}</td>
+    <td class="row-actions">
+        <button class="btn btn-ghost btn-sm" hx-get="/transactions/{{ tx.id }}/edit"
+                hx-target="closest tr" hx-swap="outerHTML" aria-label="Edit {{ tx.raw_description }}">Edit</button>
+        {% if tx.category_source == 'manual' %}
+        <button class="btn btn-ghost btn-sm" hx-post="/transactions/{{ tx.id }}/reset"
+                hx-target="closest tr" hx-swap="outerHTML"
+                title="Forget your edit and let the category rules decide">Reset to rules</button>
+        {% endif %}
+        <button class="btn btn-ghost btn-sm" hx-delete="/transactions/{{ tx.id }}"
+                hx-target="closest tr" hx-swap="outerHTML"
+                hx-confirm="Delete this transaction? Re-importing a statement that contains it will add it back."
+                aria-label="Delete {{ tx.raw_description }}">Delete</button>
+    </td>
+</tr>
