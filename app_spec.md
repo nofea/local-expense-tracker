@@ -167,8 +167,8 @@ Ingestion runs as a **background job**: one job at a time, in a worker thread, s
 
 ### 3.1 Upload
 1. The user picks an existing account or creates one, chooses the file, and optionally enters a PDF password.
-2. The server writes the upload to a `tempfile` with a generated name. The client-supplied filename is used only as display text, sanitized with `Path(name).name`, and stripped of control characters.
-3. The server computes `file_sha256`. If a statement with the same `(account_id, file_sha256)` already exists in `committed` or `review`, it rejects the upload with a link to that statement.
+2. The server writes the upload to a `tempfile` with a generated name, in a private `tmp/` directory next to the database (mode 0700). Startup wipes that directory, so a crash never leaves a statement behind. The client-supplied filename is used only as display text, sanitized with `Path(name).name`, and stripped of control characters.
+3. The server computes `file_sha256`. If a statement with the same `(account_id, file_sha256)` already exists in `committed` or `review`, or is still in progress, it rejects the upload with a link to that statement. A previous `failed` or `discarded` attempt is replaced.
 4. The server inserts the `statements` row with `status='queued'` and returns a progress fragment. That fragment polls `GET /imports/{id}/status` until the job reaches `review`, `failed` or `needs_password`.
 
 ### 3.2 Extraction
@@ -229,6 +229,11 @@ The validator runs on staged rows, and again after every edit in review.
 | `reconcile_mismatch` | statement | `opening + Σ(non-dropped amount_minor) ≠ closing`, checked only when both balances are known. The difference is shown. The stored value is `reconciled = 0/1/NULL`. |
 
 Not validated (by decision): dates outside the statement period.
+
+The source text is not stored (§9.3), so `not_in_source` is computed once, when rows are staged:
+* On later revalidation, a row keeps the flag unless the user edits its description. Editing the description clears it, because the user has then vouched for the text.
+* `bad_value_date` stays on the row in the same way after its value date has been cleared.
+* If no source text was extracted at all, the check is skipped.
 
 ---
 
@@ -359,27 +364,27 @@ Each phase is done when its tests pass with `python -m unittest discover tests`.
 
 ## Appendix A: Implementation Gap Checklist (code as of `3c9b5f7`)
 
-Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7) and `tests/test_schema_v2.py` (the schema, migration and rules items).
+Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10).
 
 1. ✅ 🔴 **Path traversal / overwrite on upload.** `web/app.py::upload_file` writes to `uploads/<client filename>` without sanitizing it. Fix: §3.1 and §9.6.
 2. ✅ 🔴 **Trend skips or duplicates months.** `core/analytics.py::get_monthly_trend` subtracts `i*30` days (e.g. Mar 1 − 30d = Jan 30, so Feb is missing). Fix: calendar month arithmetic (§8).
 3. ✅ 🔴 **HTMX loaded from unpkg.** `web/templates/base.html` breaks the local-only principle and fails offline. Fix: vendor it into `web/static/` (§9.2). The Google Fonts `@import` in `style.css` was removed too.
 4. ✅ 🔴 **Chunks split mid-line and overlap.** `core/ingestion.py::_chunk_text` cuts rows apart, producing truncated near-duplicates. Fix: §3.3.
 5. ✅ 🔴 **Genuine same-day repeats are lost.** `models.compute_transaction_id` has no ordinal and no account. Fix: §5 (requires migration).
-6. ◐ 🔴 **Ingestion blocks the event loop.** `POST /upload` runs `process_file` synchronously inside `async def`. Fix: background job (§3). The pipeline now runs in a threadpool, so the event loop is free, but the request still waits for the whole run. The job and progress UI depend on item 8.
+6. ✅ 🔴 **Ingestion blocks the event loop.** `POST /upload` runs `process_file` synchronously inside `async def`. Fix: background job (§3). Done in `core/jobs.py`: one worker thread, the `statements` row as the job record, progress polling via `GET /imports/{id}/status`, and interrupted jobs marked `failed` at web startup.
 7. ✅ 🔴 **Invalid query params cause a 500.** `GET /?month=13` raises `ValueError` from `datetime()`. Fix: validate (§7.1).
 8. ◐ 🟠 **Schema v2.** Add `accounts`, `statements`, `staged_rows` and `csv_mappings`. On `transactions`, add `amount_minor`, `is_transfer`, `category_source`, `rule_id`, `account_id` and `statement_id`. On `category_rules`, add `priority`, `mark_transfer` and `account_id`. Add `core/migrations.py` with `user_version`. Progress so far: all tables exist, the migration runs (Appendix B), and the code uses `accounts`, `statements`, `amount_minor`, `is_transfer`, `category_source` and `rule_id`. Ingestion files everything under a `Default` account and commits immediately. `staged_rows` and `csv_mappings` exist but are not used until items 10 and 11.
-9. 🟠 **No validator** beyond Pydantic types. Add §4, including the `not_in_source` and reconciliation checks.
-10. 🟠 **No review step.** Rows go straight to the ledger. Add `staged_rows` and the review UI (§3.5).
+9. ✅ 🟠 **No validator** beyond Pydantic types. Add §4, including the `not_in_source` and reconciliation checks. Done in `core/validator.py`. Statement period and balances come from the LLM (§3.3, `ollama_client.extract_statement_metadata`) and can be edited in review.
+10. ✅ 🟠 **No review step.** Rows go straight to the ledger. Add `staged_rows` and the review UI (§3.5). Done in `core/staging.py` and `/imports/{id}`. `database.import_statement` still writes straight to the ledger, and is used only by tests.
 11. 🟠 **CSV always goes through the LLM.** Add `csv_mappings` and a deterministic parser (§3.2).
 12. 🟠 **Password-protected PDFs** are not supported (§3.2).
 13. ✅ 🟠 **Rules engine semantics.** `database.apply_rules` overwrites every match, orders rules alphabetically, and never reverts. Its WHERE clause `(category='Uncategorized' OR category != ?)` reduces to `category != ?`. Fix: rewrite per §6. Done in `database._run_rules_engine`. Deleting a rule now re-runs the engine.
 14. 🟠 **No manual edit or delete of transactions** in either UI. `database.delete_transaction` exists but no route or UI calls it.
-15. 🟠 **No imports page and no undo for an import** (§7.1).
+15. ◐ 🟠 **No imports page and no undo for an import** (§7.1). The `/imports` list and discard-in-review exist. Deleting a committed import is still missing.
 16. ✅ 🟠 **Transfers are counted as income and expense** in all analytics (§8). The analytics queries now filter on `is_transfer = 0`. There is no UI to flag a transfer yet, except a `mark_transfer` rule.
 17. 🟠 **Uncategorized count is global**, not per month, and doesn't link anywhere (§8, §7.1).
 18. 🟠 **TUI gaps.** No page keys, so only the first 50 rows per month are reachable. Dashboard is fixed to the current month. No search, category edit, transfer toggle or account filter (§7.2).
-19. ◐ 🟠 **Uploads retained forever** in `uploads/`. Fix: delete after extraction (§3.2, §9.3). Uploads now go to a temp file that is deleted after ingestion. Full compliance (deleting right after extraction, before review) comes with the job pipeline.
+19. ✅ 🟠 **Uploads retained forever** in `uploads/`. Fix: delete after extraction (§3.2, §9.3). The worker deletes the file as soon as its text is read, on success and failure alike.
 20. 🟡 **Config scattered.** The model is hardcoded in `ollama_client.DEFAULT_MODEL` and again in `web/app.py` `Form("llama3.1")`. `₹` / `INR` are hardcoded in `tui/screens/*.py`, `web/templates/*.html` and `web/static/charts.js`. Fix: `config.toml` (§1.1).
 21. ✅ 🟡 **Inconsistent connections.** `core/analytics.py::_conn` and `categorizer.preview_rule_matches` open raw sqlite connections without WAL or `busy_timeout`. Fix: use the single helper (§2).
 22. 🟡 **The JSON schema is duplicated** in `SYSTEM_PROMPT` and in Pydantic. The prompt doesn't explain the credit-card sign convention. Fix: §3.3.

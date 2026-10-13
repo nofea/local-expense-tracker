@@ -1,0 +1,161 @@
+{# Review screen body (app_spec.md §3.5). Every action re-renders this whole block,
+   because one edit can change other rows' issues and the reconciliation. #}
+{% set s = review.statement %}
+{% set editable = s.status == 'review' %}
+<div id="review-body">
+
+    {% if message %}<div class="flash flash-ok" role="status">{{ message }}</div>{% endif %}
+    {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+    {% if review.chunk_errors %}
+    <div class="flash flash-warn" role="alert">
+        <strong>Part of the statement could not be read, so rows may be missing:</strong>
+        {% for e in review.chunk_errors %}<div>{{ e }}</div>{% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Summary -->
+    <div class="review-summary">
+        <div class="review-stat"><span class="review-stat-value">{{ review.active_rows }}</span><span>rows to import</span></div>
+        <div class="review-stat {{ 'is-error' if review.error_rows }}"><span class="review-stat-value">{{ review.error_rows }}</span><span>errors</span></div>
+        <div class="review-stat {{ 'is-warn' if review.warning_rows }}"><span class="review-stat-value">{{ review.warning_rows }}</span><span>warnings</span></div>
+        <div class="review-stat"><span class="review-stat-value">{{ review.duplicate_rows }}</span><span>already in ledger</span></div>
+        <div class="review-stat"><span class="review-stat-value">{{ review.total_minor | money }}</span><span>net of rows</span></div>
+    </div>
+
+    <!-- Statement metadata & reconciliation -->
+    <div class="card review-meta">
+        <form class="form-row"
+              hx-post="/imports/{{ s.id }}/meta" hx-target="#review-body" hx-swap="outerHTML">
+            <div class="form-group">
+                <label for="period_start">Period start</label>
+                <input id="period_start" type="text" name="period_start" placeholder="YYYY-MM-DD"
+                       value="{{ s.period_start or '' }}" {{ 'disabled' if not editable }}>
+            </div>
+            <div class="form-group">
+                <label for="period_end">Period end</label>
+                <input id="period_end" type="text" name="period_end" placeholder="YYYY-MM-DD"
+                       value="{{ s.period_end or '' }}" {{ 'disabled' if not editable }}>
+            </div>
+            <div class="form-group">
+                <label for="opening_balance">Opening balance</label>
+                <input id="opening_balance" type="text" inputmode="decimal" name="opening_balance"
+                       placeholder="unknown" value="{{ s.opening_minor | major }}" {{ 'disabled' if not editable }}>
+            </div>
+            <div class="form-group">
+                <label for="closing_balance">Closing balance</label>
+                <input id="closing_balance" type="text" inputmode="decimal" name="closing_balance"
+                       placeholder="unknown" value="{{ s.closing_minor | major }}" {{ 'disabled' if not editable }}>
+            </div>
+            {% if editable %}<button type="submit" class="btn btn-ghost btn-sm">Save details</button>{% endif %}
+        </form>
+        <p class="reconcile-line">
+            {% if review.reconciled is none %}
+                <span class="badge badge-muted">Not checked</span>
+                Enter the opening and closing balances to check that no rows are missing.
+            {% elif review.reconciled %}
+                <span class="badge badge-ok">Reconciled</span>
+                Opening balance plus these rows equals the closing balance.
+            {% else %}
+                <span class="badge badge-error">Mismatch</span>
+                The rows are off by <strong>{{ review.difference_minor | money }}</strong>
+                against the closing balance. A row may be missing, duplicated or have the wrong sign.
+            {% endif %}
+        </p>
+    </div>
+
+    <!-- Actions -->
+    {% if editable %}
+    <div class="review-actions">
+        <form hx-post="/imports/{{ s.id }}/commit" hx-target="#review-body" hx-swap="outerHTML"
+              style="display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+            {% if review.reconciled == 0 %}
+            <label class="checkbox-label">
+                <input type="checkbox" name="accept_mismatch" value="true"> Commit anyway (balances don't match)
+            </label>
+            {% endif %}
+            <button type="submit" class="btn btn-primary" {{ 'disabled' if not review.can_commit }}>
+                ✅ Commit {{ review.active_rows }} row{{ 's' if review.active_rows != 1 }}
+            </button>
+            {% if review.error_rows %}
+            <span class="muted-line">Fix or drop the {{ review.error_rows }} row{{ 's' if review.error_rows != 1 }} marked as errors first.</span>
+            {% endif %}
+        </form>
+        <button class="btn btn-danger btn-sm"
+                hx-post="/imports/{{ s.id }}/discard" hx-target="#review-body" hx-swap="outerHTML"
+                hx-confirm="Discard this import? Nothing will be saved.">Discard import</button>
+    </div>
+    {% elif s.status == 'committed' %}
+    <div class="review-actions">
+        <a href="/transactions" class="btn btn-primary btn-sm">View transactions →</a>
+        <a href="/upload" class="btn btn-ghost btn-sm">Upload another</a>
+    </div>
+    {% else %}
+    <div class="review-actions">
+        <span class="muted-line">This import is {{ s.status }}.</span>
+        <a href="/upload" class="btn btn-ghost btn-sm">Upload a statement</a>
+    </div>
+    {% endif %}
+
+    <!-- Rows -->
+    {% if review.rows %}
+    <div class="card">
+        <div class="table-wrapper">
+            <table class="review-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th style="text-align:right;">Amount</th>
+                        <th title="Excluded from income and expense totals">Transfer</th>
+                        <th>Issues</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for r in review.rows %}
+                    {% set row_class = 'is-dropped' if r.dropped else ('is-error' if 'error' in r.levels else ('is-warn' if 'warning' in r.levels else '')) %}
+                    {% set locked = not editable or r.dropped %}
+                    <tr class="{{ row_class }}" id="row-{{ r.id }}">
+                        <td class="muted-line">{{ r.position + 1 }}</td>
+                        <td><input type="text" name="transaction_date" value="{{ r.transaction_date or '' }}"
+                                   aria-label="Date of row {{ r.position + 1 }}" class="cell-input cell-date" {{ 'disabled' if locked }}></td>
+                        <td><input type="text" name="raw_description" value="{{ r.raw_description or '' }}"
+                                   aria-label="Description of row {{ r.position + 1 }}" class="cell-input cell-desc" {{ 'disabled' if locked }}></td>
+                        <td><input type="text" inputmode="decimal" name="amount" value="{{ r.amount_minor | major }}"
+                                   aria-label="Amount of row {{ r.position + 1 }}"
+                                   class="cell-input cell-amount {{ 'amount-positive' if (r.amount_minor or 0) > 0 else 'amount-negative' }}" {{ 'disabled' if locked }}></td>
+                        <td style="text-align:center;"><input type="checkbox" name="is_transfer" value="true"
+                                   aria-label="Row {{ r.position + 1 }} is a transfer"
+                                   {{ 'checked' if r.is_transfer }} {{ 'disabled' if locked }}></td>
+                        <td>
+                            {% for code in r.issues %}
+                            <span class="badge badge-{{ {'error': 'error', 'warning': 'warn', 'info': 'muted'}[issue_levels[code]] }}"
+                                  title="{{ issue_messages[code] }}">{{ issue_messages[code] }}</span>
+                            {% endfor %}
+                        </td>
+                        <td style="white-space:nowrap;">
+                            {% if editable %}
+                                {% if r.dropped %}
+                                <button class="btn btn-ghost btn-sm"
+                                        hx-post="/imports/{{ s.id }}/rows/{{ r.id }}/drop" hx-vals='{"dropped": "false"}'
+                                        hx-target="#review-body" hx-swap="outerHTML">Restore</button>
+                                {% else %}
+                                <button class="btn btn-ghost btn-sm"
+                                        hx-post="/imports/{{ s.id }}/rows/{{ r.id }}" hx-include="closest tr"
+                                        hx-target="#review-body" hx-swap="outerHTML">Save</button>
+                                <button class="btn btn-ghost btn-sm"
+                                        hx-post="/imports/{{ s.id }}/rows/{{ r.id }}/drop" hx-vals='{"dropped": "true"}'
+                                        hx-target="#review-body" hx-swap="outerHTML">Drop</button>
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>

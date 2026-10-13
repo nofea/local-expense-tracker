@@ -26,6 +26,10 @@
                 <span class="nav-icon">📄</span>
                 Upload Statements
             </a>
+            <a href="/imports" class="nav-link {% if request.url.path.startswith('/imports') %}active{% endif %}">
+                <span class="nav-icon">📥</span>
+                Imports
+            </a>
             <a href="/transactions" class="nav-link {% if request.url.path == '/transactions' %}active{% endif %}">
                 <span class="nav-icon">📋</span>
                 Transactions

@@ -937,3 +937,103 @@ label {
     border: 1px solid rgba(248, 113, 113, 0.3);
     color: var(--expense);
 }
+
+/* ======================================================================
+   Import progress & review (app_spec.md §3.5)
+   ====================================================================== */
+
+.muted-line { color: var(--text-muted); font-size: 0.85rem; }
+
+.import-progress h4 { display: flex; align-items: center; gap: 0.6rem; }
+.progress-bar {
+    height: 6px;
+    margin: 0.85rem 0 0.5rem;
+    border-radius: 999px;
+    background: var(--bg-input);
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.4s ease;
+}
+
+.flash {
+    padding: 0.75rem 1rem;
+    border-radius: 10px;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+    border: 1px solid transparent;
+}
+.flash-ok    { background: var(--income-bg);  border-color: var(--income);  color: var(--income); }
+.flash-error { background: var(--expense-bg); border-color: var(--expense); color: var(--expense); }
+.flash-warn  { background: var(--warning-bg); border-color: var(--warning); color: var(--text-primary); }
+
+.badge {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    margin: 0.1rem 0.25rem 0.1rem 0;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.badge-ok    { background: var(--income-bg);  color: var(--income); }
+.badge-error { background: var(--expense-bg); color: var(--expense); }
+.badge-warn  { background: var(--warning-bg); color: var(--warning); }
+.badge-muted { background: var(--bg-hover);   color: var(--text-secondary); }
+
+.review-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+.review-stat {
+    display: flex;
+    flex-direction: column;
+    padding: 0.75rem 1rem;
+    border-radius: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--glass-border);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+.review-stat-value { color: var(--text-primary); font-size: 1.3rem; font-weight: 700; }
+.review-stat.is-error .review-stat-value { color: var(--expense); }
+.review-stat.is-warn  .review-stat-value { color: var(--warning); }
+
+.review-meta { margin-bottom: 1rem; }
+.reconcile-line { margin-top: 0.75rem; color: var(--text-secondary); font-size: 0.88rem; }
+
+.review-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+.checkbox-label { display: inline-flex; gap: 0.4rem; align-items: center; color: var(--warning); font-size: 0.88rem; }
+.btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+.review-table td { vertical-align: middle; }
+.review-table tr.is-error td { background: var(--expense-bg); }
+.review-table tr.is-warn  td { background: var(--warning-bg); }
+.review-table tr.is-dropped td { opacity: 0.45; }
+.review-table tr.is-dropped .cell-input { text-decoration: line-through; }
+
+.cell-input {
+    width: 100%;
+    padding: 0.35rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid var(--glass-border);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 0.85rem;
+}
+.cell-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cell-date   { min-width: 7.5rem; }
+.cell-desc   { min-width: 14rem; }
+.cell-amount { min-width: 6.5rem; text-align: right; font-variant-numeric: tabular-nums; }

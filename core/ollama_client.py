@@ -16,7 +16,7 @@ try:
 except ImportError:
     _ollama = None
 
-from core.models import ExtractedTransaction, TransactionExtractionResult
+from core.models import ExtractedTransaction, StatementMetadata, TransactionExtractionResult
 
 log = logging.getLogger(__name__)
 
@@ -177,3 +177,32 @@ def extract_transactions(
         except Exception:
             pass
         raise ValueError(f"Could not parse LLM output: {exc}") from exc
+
+
+METADATA_PROMPT = """\
+You read the header and summary of a bank or credit card statement. Report \
+the statement period and the opening and closing balances exactly as printed. \
+Dates must be YYYY-MM-DD. Use null for anything the text does not show; never \
+guess or compute a value.\
+"""
+
+
+def extract_statement_metadata(
+    raw_text: str,
+    *,
+    model: str = DEFAULT_MODEL,
+) -> StatementMetadata:
+    """Ask the model for the statement period and balances in *raw_text*."""
+    if _ollama is None:
+        raise RuntimeError("Ollama Python package is not installed.")
+
+    response = _ollama.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": METADATA_PROMPT},
+            {"role": "user", "content": raw_text},
+        ],
+        format=StatementMetadata.model_json_schema(),
+        options={"temperature": 0},
+    )
+    return StatementMetadata.model_validate_json(response["message"]["content"])

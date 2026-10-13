@@ -19,9 +19,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import core.ingestion as ingestion
+from core import jobs
 from core.analytics import get_monthly_trend
 from core.database import get_or_create_account, import_statement, init_db
-from core.models import IngestionSummary
 from web.app import _sanitize_filename, app
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -67,16 +67,15 @@ class TestChunking(unittest.TestCase):
         rows = [l for c in chunks for l in c.split("\n")[2:]]
         self.assertEqual(rows, body.split("\n"))
 
-    @patch("core.ingestion.find_statement", return_value=None)
-    @patch("core.ingestion.get_or_create_account", return_value=1)
+    @patch("core.ingestion.extract_statement_metadata")
     @patch("core.ingestion.extract_transactions", return_value=[])
-    def test_csv_source_name_overrides_temp_file_name(self, mock_extract, _acct, _find):
+    def test_csv_parser_chosen_by_source_name_not_temp_name(self, mock_extract, _meta):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "statement-abc123.csv"
+            path = Path(tmp) / "statement-abc123.tmp"
             path.write_text("Date,Description,Amount\n2024-01-01,Store,-10.00\n")
-            summary = ingestion.process_file(path, source_name="hdfc_jan.csv")
+            pages, header = ingestion.read_pages(path, "hdfc_jan.csv")
+        ingestion.extract_statement(pages, header=header)
 
-        self.assertEqual(summary.source_file, "hdfc_jan.csv")
         sent = mock_extract.call_args[0][0]
         self.assertTrue(sent.startswith("Date | Description | Amount"))
         self.assertIn("2024-01-01 | Store | -10.00", sent)
@@ -132,7 +131,8 @@ class TestMonthlyTrend(unittest.TestCase):
 
 class TestUploadHandling(unittest.TestCase):
     """Items 1 and 19: uploads never use the client filename as a path and
-    are not retained."""
+    are not retained.  (Deletion after extraction is tested on the worker in
+    test_review_pipeline.)"""
 
     def setUp(self):
         self.client = TestClient(app)
@@ -145,64 +145,40 @@ class TestUploadHandling(unittest.TestCase):
         self.assertEqual(_sanitize_filename(".."), "upload")
         self.assertEqual(_sanitize_filename(None), "upload")
 
-    @patch("web.app.list_available_models", return_value=[])
     @patch("web.app.is_ollama_available", return_value=True)
-    def test_traversal_name_is_processed_from_temp_file_then_deleted(self, _avail, _models):
-        seen = {}
-
-        def fake_process(path, *, model, source_name):
-            seen["path"] = Path(path)
-            seen["existed"] = Path(path).exists()
-            seen["source_name"] = source_name
-            return IngestionSummary(source_file=source_name)
-
-        with patch("web.app.process_file", side_effect=fake_process):
+    def test_traversal_name_is_queued_from_private_temp_file(self, _avail):
+        with patch("web.app.jobs.submit") as submit:
             res = self.client.post(
                 "/upload",
-                files={"file": ("../../evil.csv", b"Date,Description,Amount\n", "text/csv")},
+                files={"file": ("../../evil.csv", b"Date,Description,Amount\nevil\n", "text/csv")},
                 data={"model": "llama3.1"},
             )
 
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(seen["existed"])
-        self.assertEqual(seen["source_name"], "evil.csv")
-        self.assertNotIn("evil", seen["path"].name)
-        self.assertFalse(seen["path"].exists(), "temp file must be deleted after ingestion")
+        job = submit.call_args[0][0]
+        self.assertEqual(job.source_name, "evil.csv")
+        self.assertNotIn("evil", job.file_path.name)
+        self.assertEqual(job.file_path.parent, jobs.tmp_dir())
+        self.assertTrue(job.file_path.exists())
+        job.file_path.unlink()
         self.assertFalse((_REPO_ROOT.parent / "evil.csv").exists())
 
-    @patch("web.app.list_available_models", return_value=[])
     @patch("web.app.is_ollama_available", return_value=True)
-    def test_temp_file_deleted_when_ingestion_fails(self, _avail, _models):
-        seen = {}
-
-        def boom(path, **kwargs):
-            seen["path"] = Path(path)
-            raise RuntimeError("LLM exploded")
-
-        with patch("web.app.process_file", side_effect=boom):
-            res = self.client.post(
-                "/upload", files={"file": ("s.pdf", b"%PDF-1.4", "application/pdf")}
-            )
-
-        self.assertIn("LLM exploded", res.text)
-        self.assertFalse(seen["path"].exists())
-
-    @patch("web.app.list_available_models", return_value=[])
-    @patch("web.app.is_ollama_available", return_value=True)
-    def test_rejects_unsupported_extension(self, _avail, _models):
-        with patch("web.app.process_file") as proc:
+    def test_rejects_unsupported_extension(self, _avail):
+        with patch("web.app.jobs.submit") as submit:
             res = self.client.post("/upload", files={"file": ("x.exe", b"MZ", "application/octet-stream")})
-        proc.assert_not_called()
+        submit.assert_not_called()
         self.assertIn("Unsupported file type", res.text)
 
     @patch("web.app._MAX_UPLOAD_BYTES", 10)
-    @patch("web.app.list_available_models", return_value=[])
     @patch("web.app.is_ollama_available", return_value=True)
-    def test_rejects_oversized_upload(self, _avail, _models):
-        with patch("web.app.process_file") as proc:
+    def test_rejects_oversized_upload_and_removes_partial_file(self, _avail):
+        before = set(jobs.tmp_dir().iterdir())
+        with patch("web.app.jobs.submit") as submit:
             res = self.client.post("/upload", files={"file": ("big.csv", b"x" * 100, "text/csv")})
-        proc.assert_not_called()
+        submit.assert_not_called()
         self.assertIn("larger than", res.text)
+        self.assertEqual(set(jobs.tmp_dir().iterdir()), before)
 
 
 class TestQueryParamValidation(unittest.TestCase):

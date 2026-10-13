@@ -21,8 +21,7 @@ import core.database as db
 from core import migrations
 from core.analytics import get_category_breakdown, get_monthly_summary
 from core.categorizer import add_rule, remove_rule
-from core.ingestion import process_file
-from core.models import ExtractedTransaction, compute_transaction_id, to_minor
+from core.models import compute_transaction_id, to_minor
 
 _REAL_DB = Path(__file__).resolve().parent.parent / "data" / "expenses.db"
 
@@ -317,36 +316,6 @@ class TestRulesEngine(_TempDB):
         self.assertEqual(self._row("Caf")[0], "Food")
         add_rule("%", "Everything", db_path=self.path)  # literal %, not a LIKE wildcard
         self.assertEqual(self._row("AMAZON")[0], "Uncategorized")
-
-
-class TestProcessFileV2(_TempDB):
-    def setUp(self):
-        super().setUp()
-        db.init_db(self.path)
-        self.csv = Path(self._tmp.name) / "upload.csv"
-        self.csv.write_text("Date,Description,Amount\n2025-06-01,Shop,-12.34\n")
-
-    @patch("core.ingestion.extract_transactions")
-    def test_reupload_of_same_file_is_rejected(self, mock_extract):
-        mock_extract.return_value = [
-            ExtractedTransaction(transaction_date="2025-06-01", raw_description="Shop", amount=-12.34)
-        ]
-        first = process_file(self.csv, db_path=self.path, source_name="june.csv")
-        self.assertEqual((first.new_inserted, first.errors), (1, []))
-
-        second = process_file(self.csv, db_path=self.path, source_name="june-again.csv")
-        self.assertEqual(second.new_inserted, 0)
-        self.assertIn("already imported as 'june.csv'", second.errors[0])
-        self.assertEqual(mock_extract.call_count, 1)
-
-        [tx] = db.get_transactions(self.path)
-        self.assertEqual((tx.amount_minor, tx.amount, tx.source_file), (-1234, -12.34, "june.csv"))
-
-    @patch("core.ingestion.extract_transactions", side_effect=RuntimeError("LLM down"))
-    def test_no_statement_recorded_when_nothing_extracted(self, _mock):
-        summary = process_file(self.csv, db_path=self.path, source_name="june.csv")
-        self.assertTrue(summary.errors)
-        self.assertEqual(self.q("SELECT COUNT(*) FROM statements")[0][0], 0)
 
 
 if __name__ == "__main__":

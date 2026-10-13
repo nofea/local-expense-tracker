@@ -62,7 +62,7 @@ def init_db(db_path: Optional[str | Path] = None) -> Optional[migrations.Migrati
 
 
 # ---------------------------------------------------------------------------
-# Accounts & statements
+# Accounts
 # ---------------------------------------------------------------------------
 
 def get_or_create_account(
@@ -82,20 +82,6 @@ def get_or_create_account(
         conn.close()
 
 
-def find_statement(
-    account_id: int, file_sha256: str, db_path: Optional[str | Path] = None
-) -> Optional[sqlite3.Row]:
-    """Return the statement for this account with the same file hash, if any."""
-    conn = connect(db_path)
-    try:
-        return conn.execute(
-            "SELECT * FROM statements WHERE account_id = ? AND file_sha256 = ?",
-            (account_id, file_sha256),
-        ).fetchone()
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
 # Transaction CRUD
 # ---------------------------------------------------------------------------
@@ -111,6 +97,10 @@ def import_statement(
     db_path: Optional[str | Path] = None,
 ) -> tuple[int, int, int, int]:
     """Record a committed statement and insert its rows, in one transaction.
+
+    This writes straight to the ledger and skips review, so the upload flow
+    must not use it (it goes through ``core.staging``).  It exists for tests
+    and fixtures that need ledger data.
 
     *rows* must be the complete statement in document order (ordinals in the
     §5 id are counted within it).  Each row has ``transaction_date``,

@@ -69,6 +69,23 @@ class TransactionExtractionResult(BaseModel):
     transactions: list[ExtractedTransaction]
 
 
+class StatementMetadata(BaseModel):
+    """Statement-level facts asked of the first and last chunks (§3.3)."""
+
+    period_start: Optional[str] = Field(
+        None, description="First day of the statement period, YYYY-MM-DD, or null"
+    )
+    period_end: Optional[str] = Field(
+        None, description="Last day of the statement period, YYYY-MM-DD, or null"
+    )
+    opening_balance: Optional[float] = Field(
+        None, description="Opening/previous balance as printed, or null if not shown"
+    )
+    closing_balance: Optional[float] = Field(
+        None, description="Closing/current balance as printed, or null if not shown"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Categorization rule
 # ---------------------------------------------------------------------------
@@ -117,16 +134,6 @@ class MonthlyTrend(BaseModel):
     month_label: str  # e.g. "2025-06"
     income: float
     expense: float
-
-
-class IngestionSummary(BaseModel):
-    """Result of processing a single uploaded file."""
-
-    source_file: str
-    total_extracted: int = 0
-    new_inserted: int = 0
-    duplicates_skipped: int = 0
-    errors: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

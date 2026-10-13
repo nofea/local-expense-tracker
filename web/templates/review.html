@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Review {{ review.statement.file_name }} — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Review import #{{ review.statement.id }}</h2>
+    <p>
+        {{ review.statement.file_name }} · {{ review.statement.account_name }} ·
+        <span class="badge badge-{{ {'review': 'warn', 'committed': 'ok', 'failed': 'error', 'discarded': 'muted'}.get(review.statement.status, 'muted') }}">{{ review.statement.status }}</span>
+    </p>
+</div>
+
+{% include "partials/review_body.html" %}
+{% endblock %}

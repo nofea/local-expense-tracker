@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import pdfplumber
 
-from core.database import find_statement, get_or_create_account, import_statement
-from core.models import IngestionSummary
-from core.ollama_client import DEFAULT_MODEL, extract_transactions
+from core.models import StatementMetadata, to_minor
+from core.ollama_client import DEFAULT_MODEL, extract_statement_metadata, extract_transactions
 
 log = logging.getLogger(__name__)
 
@@ -109,106 +108,107 @@ def _chunk_pages(pages: list[str], header: str = "") -> list[str]:
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def process_file(
-    filepath: str | Path,
-    *,
-    model: str = DEFAULT_MODEL,
-    db_path: Optional[str | Path] = None,
-    source_name: Optional[str] = None,
-) -> IngestionSummary:
-    """Full ingestion pipeline for a single file.
+@dataclass
+class Extraction:
+    """What the LLM pass produced for one file, ready for staging."""
 
-    *source_name* is the display name recorded as ``source_file`` (and used
-    to pick the parser by extension); it defaults to the file's own name,
-    so callers can process a temp file under the user's original name.
+    rows: list[dict] = field(default_factory=list)  # ExtractedTransaction dumps
+    source_text: str = ""  # for the not_in_source check; never stored
+    metadata: StatementMetadata = field(default_factory=StatementMetadata)
+    chunk_errors: list[str] = field(default_factory=list)
 
-    0. Reject a file already imported into the account (same SHA-256)
-    1. Extract raw text (PDF or CSV)
-    2. Chunk the text
-    3. Send each chunk to the LLM for structured extraction
-    4. Record a statement and insert its rows (§5 dedup), then apply
-       categorization rules — all in one transaction
+    @property
+    def opening_minor(self) -> Optional[int]:
+        b = self.metadata.opening_balance
+        return None if b is None else to_minor(b)
 
-    Until the review step (app_spec.md §3.5) exists, everything goes into
-    the ``Default`` account and is committed straight away.
+    @property
+    def closing_minor(self) -> Optional[int]:
+        b = self.metadata.closing_balance
+        return None if b is None else to_minor(b)
+
+
+class ExtractionError(Exception):
+    """The file could not be turned into text at all; the job fails."""
+
+
+def read_pages(filepath: str | Path, source_name: str) -> tuple[list[str], str]:
+    """Extract ``(pages, header)`` from a PDF or CSV (§3.2).
+
+    The parser is chosen by *source_name*'s extension, so a temp file can be
+    read under the user's original name.  Raises :class:`ExtractionError`.
     """
-    filepath = Path(filepath)
-    source_name = source_name or filepath.name
-    summary = IngestionSummary(source_file=source_name)
-
-    # Step 0 — re-upload check (§3.1)
-    file_sha256 = hashlib.sha256(filepath.read_bytes()).hexdigest()
-    account_id = get_or_create_account(db_path=db_path)
-    existing = find_statement(account_id, file_sha256, db_path)
-    if existing is not None:
-        summary.errors.append(
-            f"This file was already imported as '{existing['file_name']}' "
-            f"on {existing['created_at']}."
-        )
-        return summary
-
-    # Step 1 — text extraction
     ext = Path(source_name).suffix.lower()
     if ext == ".pdf":
-        pages = extract_pages_from_pdf(filepath)
-        header = ""
+        pages, header = extract_pages_from_pdf(filepath), ""
     elif ext == ".csv":
         header, body = extract_text_from_csv(filepath)
         pages = [body] if body.strip() else []
     else:
-        summary.errors.append(f"Unsupported file type: {ext}")
-        return summary
-
+        raise ExtractionError(f"Unsupported file type: {ext}")
     if not any(p.strip() for p in pages):
-        summary.errors.append("No text could be extracted from the file.")
-        return summary
+        raise ExtractionError("No text could be extracted (scanned PDF or empty file?).")
+    return pages, header
 
-    log.info("Extracted %d chars from %s", sum(map(len, pages)), source_name)
 
-    # Step 2 — chunk
+def extract_statement(
+    pages: list[str],
+    *,
+    header: str = "",
+    model: str = DEFAULT_MODEL,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+) -> Extraction:
+    """Run the LLM over the text in non-overlapping chunks (§3.3).
+
+    A failing chunk is recorded in ``chunk_errors`` and does not stop the
+    others.  *on_progress(done, total)* is called before the first chunk and
+    after each one.
+    """
     chunks = _chunk_pages(pages, header=header)
+    result = Extraction(source_text="\n\n".join([header, *pages]))
     log.info("Split into %d chunk(s)", len(chunks))
+    if on_progress:
+        on_progress(0, len(chunks))
 
-    # Step 3 — LLM extraction per chunk
-    all_transactions: list[dict] = []
     for i, chunk in enumerate(chunks):
         try:
             extracted = extract_transactions(chunk, model=model)
-            for tx in extracted:
-                all_transactions.append(tx.model_dump())
+            result.rows.extend(tx.model_dump() for tx in extracted)
             log.info("Chunk %d/%d: extracted %d transactions", i + 1, len(chunks), len(extracted))
         except Exception as exc:
-            msg = f"Chunk {i + 1}/{len(chunks)} failed: {exc}"
+            msg = f"Chunk {i + 1}/{len(chunks)} failed: {exc or type(exc).__name__}"
             log.error(msg)
-            summary.errors.append(msg)
+            result.chunk_errors.append(msg)
+        if on_progress:
+            on_progress(i + 1, len(chunks))
 
-    summary.total_extracted = len(all_transactions)
+    result.metadata = _statement_metadata(chunks, model)
+    return result
 
-    if not all_transactions:
-        if not summary.errors:
-            summary.errors.append("LLM returned no transactions.")
-        return summary
 
-    # Step 4 — record the statement, insert rows, apply rules
-    _, inserted, skipped, invalid = import_statement(
-        all_transactions,
-        account_id=account_id,
-        file_name=source_name,
-        file_sha256=file_sha256,
-        extractor="llm",
-        model=model,
-        db_path=db_path,
+def _statement_metadata(chunks: list[str], model: str) -> StatementMetadata:
+    """Ask the first and last chunks for period and balances.
+
+    Values from the first chunk win, except that the closing balance and
+    period end prefer the last chunk, where statement summaries usually sit.
+    Failures only cost the metadata; the user can enter it in review.
+    """
+    def ask(chunk: str) -> StatementMetadata:
+        try:
+            return extract_statement_metadata(chunk, model=model)
+        except Exception as exc:
+            log.warning("Statement metadata extraction failed: %s", exc)
+            return StatementMetadata()
+
+    if not chunks:
+        return StatementMetadata()
+    first = ask(chunks[0])
+    if len(chunks) == 1:
+        return first
+    last = ask(chunks[-1])
+    return StatementMetadata(
+        period_start=first.period_start or last.period_start,
+        period_end=last.period_end or first.period_end,
+        opening_balance=first.opening_balance if first.opening_balance is not None else last.opening_balance,
+        closing_balance=last.closing_balance if last.closing_balance is not None else first.closing_balance,
     )
-    summary.new_inserted = inserted
-    summary.duplicates_skipped = skipped
-    if invalid:
-        summary.errors.append(f"{invalid} row(s) with a zero amount were skipped.")
-
-    log.info(
-        "Ingestion complete for %s: %d extracted, %d new, %d dupes",
-        source_name,
-        summary.total_extracted,
-        summary.new_inserted,
-        summary.duplicates_skipped,
-    )
-    return summary

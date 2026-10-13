@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import tempfile
@@ -14,9 +15,9 @@ from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.concurrency import run_in_threadpool
 
 from core import database as db
+from core import jobs, staging, validator
 from core.analytics import (
     get_category_breakdown,
     get_monthly_summary,
@@ -25,7 +26,6 @@ from core.analytics import (
     get_top_merchants,
 )
 from core.categorizer import add_rule, apply_all_rules, remove_rule
-from core.ingestion import process_file
 from core.models import CategoryRule
 from core.ollama_client import is_ollama_available, list_available_models
 
@@ -63,8 +63,30 @@ templates = Jinja2Templates(
     context_processors=[_global_template_context],
 )
 
-# Ensure DB is initialised on startup
+def _money(amount_minor: Optional[int], signed: bool = True) -> str:
+    """Format integer minor units as ₹1,234.56 (with +/- when *signed*)."""
+    if amount_minor is None:
+        return "—"
+    sign = ("+" if amount_minor > 0 else "−" if amount_minor < 0 else "") if signed else ""
+    if not signed and amount_minor < 0:
+        sign = "−"
+    return f"{sign}₹{abs(amount_minor) / 100:,.2f}"
+
+
+def _major(amount_minor: Optional[int]) -> str:
+    """Minor units as a plain editable number, e.g. -1234.50."""
+    return "" if amount_minor is None else f"{amount_minor / 100:.2f}"
+
+
+templates.env.filters["money"] = _money
+templates.env.filters["major"] = _major
+templates.env.globals["issue_levels"] = validator.LEVELS
+templates.env.globals["issue_messages"] = validator.MESSAGES
+
+# Ensure DB is initialised on startup, then recover interrupted imports and
+# start the ingestion worker (only the web server runs jobs).
 db.init_db()
+jobs.start()
 
 
 # ---------------------------------------------------------------------------
@@ -181,55 +203,198 @@ async def upload_file(
     # The client filename is display text only — never a path (§3.1, §9.6).
     source_name = _sanitize_filename(file.filename)
     ext = Path(source_name).suffix.lower()
-    result = None
-    error = None
+
+    def failed(message: str) -> HTMLResponse:
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/upload_result.html",
+            context={"request": request, "error": message},
+        )
 
     if ext not in _ALLOWED_EXTENSIONS:
-        error = f"Unsupported file type '{ext or '(none)'}'. Upload a .pdf or .csv statement."
-    elif not is_ollama_available():
-        # Guard: check Ollama availability before starting pipeline
-        error = (
+        return failed(f"Unsupported file type '{ext or '(none)'}'. Upload a .pdf or .csv statement.")
+    if not is_ollama_available():
+        return failed(
             "Ollama is not running or unreachable at localhost:11434. "
             "Please ensure Ollama is installed and running ('ollama serve') before processing."
         )
-    else:
-        # Write to a generated temp name and delete it afterwards: original
-        # statements are never retained (§3.2, §9.3).
-        fd, tmp_name = tempfile.mkstemp(prefix="statement-", suffix=ext)
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "wb") as f:
-                size = 0
-                while chunk := await file.read(1024 * 1024):
-                    size += len(chunk)
-                    if size > _MAX_UPLOAD_BYTES:
-                        raise _UploadTooLarge()
-                    f.write(chunk)
-            # Run the pipeline off the event loop so the server stays responsive.
-            result = await run_in_threadpool(
-                process_file, tmp_path, model=model, source_name=source_name
-            )
-        except _UploadTooLarge:
-            error = f"File is larger than the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."
-        except Exception as exc:
-            log.exception("Ingestion failed")
-            error = str(exc)
-        finally:
-            tmp_path.unlink(missing_ok=True)
 
-    # Get updated model list for re-rendering
-    models = list_available_models()
+    # Save under a generated name in the private job directory; the worker
+    # deletes it as soon as the text is extracted (§3.2, §9.3).
+    fd, tmp_name = tempfile.mkstemp(prefix="statement-", suffix=ext, dir=jobs.tmp_dir())
+    tmp_path = Path(tmp_name)
+    try:
+        sha = hashlib.sha256()
+        with os.fdopen(fd, "wb") as f:
+            size = 0
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > _MAX_UPLOAD_BYTES:
+                    raise _UploadTooLarge()
+                sha.update(chunk)
+                f.write(chunk)
 
+        statement_id = staging.create_import(
+            account_id=db.get_or_create_account(),
+            file_name=source_name,
+            file_sha256=sha.hexdigest(),
+            model=model,
+        )
+    except _UploadTooLarge:
+        tmp_path.unlink(missing_ok=True)
+        return failed(f"File is larger than the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
+    except staging.AlreadyImported as exc:
+        tmp_path.unlink(missing_ok=True)
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/upload_result.html",
+            context={"request": request, "error": str(exc), "existing_id": exc.statement["id"]},
+        )
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    jobs.submit(jobs.Job(statement_id, tmp_path, source_name, model))
+    return _import_status(request, statement_id)
+
+
+def _import_status(request: Request, statement_id: int) -> HTMLResponse:
+    statement = staging.get_statement(statement_id)
     return templates.TemplateResponse(
         request=request,
-        name="partials/upload_result.html",
-        context={
-            "request": request,
-            "result": result,
-            "error": error,
-            "models": models,
-        },
+        name="partials/import_status.html",
+        context={"request": request, "statement": statement},
+        status_code=200 if statement else 404,
     )
+
+
+# ---------------------------------------------------------------------------
+# Routes — Imports & review (app_spec.md §3.5)
+# ---------------------------------------------------------------------------
+
+@app.get("/imports", response_class=HTMLResponse)
+async def imports_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="imports.html",
+        context={"request": request, "imports": staging.list_imports()},
+    )
+
+
+@app.get("/imports/{statement_id}/status", response_class=HTMLResponse)
+async def import_status(request: Request, statement_id: int):
+    return _import_status(request, statement_id)
+
+
+@app.get("/imports/{statement_id}", response_class=HTMLResponse)
+async def review_page(request: Request, statement_id: int):
+    review = staging.get_review(statement_id)
+    if review is None:
+        return HTMLResponse("Import not found", status_code=404)
+    return templates.TemplateResponse(
+        request=request,
+        name="review.html",
+        context={"request": request, "review": review},
+    )
+
+
+def _review_body(
+    request: Request,
+    statement_id: int,
+    *,
+    message: Optional[str] = None,
+    error: Optional[str] = None,
+) -> HTMLResponse:
+    review = staging.get_review(statement_id)
+    if review is None:
+        return HTMLResponse("Import not found", status_code=404)
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/review_body.html",
+        context={"request": request, "review": review, "message": message, "error": error},
+    )
+
+
+@app.post("/imports/{statement_id}/rows/{row_id}", response_class=HTMLResponse)
+async def edit_staged_row(
+    request: Request,
+    statement_id: int,
+    row_id: int,
+    transaction_date: str = Form(""),
+    raw_description: str = Form(""),
+    amount: str = Form(""),
+    is_transfer: bool = Form(False),
+):
+    try:
+        staging.update_row(
+            statement_id,
+            row_id,
+            transaction_date=transaction_date,
+            raw_description=raw_description,
+            amount=amount,
+            is_transfer=is_transfer,
+        )
+    except staging.ReviewError as exc:
+        return _review_body(request, statement_id, error=str(exc))
+    return _review_body(request, statement_id)
+
+
+@app.post("/imports/{statement_id}/rows/{row_id}/drop", response_class=HTMLResponse)
+async def drop_staged_row(
+    request: Request, statement_id: int, row_id: int, dropped: bool = Form(True)
+):
+    try:
+        staging.set_dropped(statement_id, row_id, dropped)
+    except staging.ReviewError as exc:
+        return _review_body(request, statement_id, error=str(exc))
+    return _review_body(request, statement_id)
+
+
+@app.post("/imports/{statement_id}/meta", response_class=HTMLResponse)
+async def edit_statement_meta(
+    request: Request,
+    statement_id: int,
+    period_start: str = Form(""),
+    period_end: str = Form(""),
+    opening_balance: str = Form(""),
+    closing_balance: str = Form(""),
+):
+    try:
+        staging.update_metadata(
+            statement_id,
+            period_start=period_start,
+            period_end=period_end,
+            opening_balance=opening_balance,
+            closing_balance=closing_balance,
+        )
+    except staging.ReviewError as exc:
+        return _review_body(request, statement_id, error=str(exc))
+    return _review_body(request, statement_id)
+
+
+@app.post("/imports/{statement_id}/commit", response_class=HTMLResponse)
+async def commit_import(
+    request: Request, statement_id: int, accept_mismatch: bool = Form(False)
+):
+    try:
+        result = staging.commit(statement_id, accept_mismatch=accept_mismatch)
+    except staging.ReviewError as exc:
+        return _review_body(request, statement_id, error=str(exc))
+    return _review_body(
+        request,
+        statement_id,
+        message=f"Committed: {result.inserted} new transaction(s), "
+        f"{result.duplicates} already in the ledger.",
+    )
+
+
+@app.post("/imports/{statement_id}/discard", response_class=HTMLResponse)
+async def discard_import(request: Request, statement_id: int):
+    try:
+        staging.discard(statement_id)
+    except staging.ReviewError as exc:
+        return _review_body(request, statement_id, error=str(exc))
+    return _review_body(request, statement_id, message="Import discarded. Nothing was saved.")
 
 
 # ---------------------------------------------------------------------------

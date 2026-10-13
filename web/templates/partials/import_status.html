@@ -1,0 +1,41 @@
+{# Progress for one import job. Re-polls itself until the job leaves queued/extracting. #}
+{% set s = statement %}
+{% if not s %}
+<div class="upload-result error"><h4>❌ Import not found</h4></div>
+{% elif s.status in ('queued', 'extracting') %}
+<div class="upload-result import-progress"
+     hx-get="/imports/{{ s.id }}/status" hx-trigger="every 1s" hx-swap="outerHTML">
+    <h4><span class="spinner"></span> {{ s.file_name }}</h4>
+    {% if s.status == 'queued' %}
+    <p class="muted-line">Waiting for the previous import to finish…</p>
+    {% else %}
+    {% set pct = (100 * s.progress_done / s.progress_total) | int if s.progress_total else 0 %}
+    <div class="progress-bar" role="progressbar" aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress-fill" style="width: {{ pct }}%;"></div>
+    </div>
+    <p class="muted-line">
+        {% if s.progress_total %}Extracting with the LLM: chunk {{ s.progress_done }} of {{ s.progress_total }}{% else %}Reading the file…{% endif %}
+    </p>
+    {% endif %}
+</div>
+{% elif s.status == 'review' %}
+<div class="upload-result success">
+    <h4>✅ {{ s.file_name }} is ready for review</h4>
+    <p class="muted-line">Nothing has been saved yet. Check the extracted rows, then commit.</p>
+    <div style="margin-top: 1rem;">
+        <a href="/imports/{{ s.id }}" class="btn btn-primary btn-sm">Review import →</a>
+    </div>
+</div>
+{% elif s.status == 'failed' %}
+<div class="upload-result error">
+    <h4>❌ {{ s.file_name }}: extraction failed</h4>
+    {% for line in (s.error or 'Unknown error').splitlines() %}
+    <p style="margin-top: 0.4rem; font-size: 0.9rem;">{{ line }}</p>
+    {% endfor %}
+</div>
+{% else %}
+<div class="upload-result">
+    <h4>{{ s.file_name }}: {{ s.status }}</h4>
+    <a href="/imports/{{ s.id }}" class="btn btn-ghost btn-sm" style="margin-top: 0.75rem;">Open import →</a>
+</div>
+{% endif %}
