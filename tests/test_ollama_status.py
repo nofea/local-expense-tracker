@@ -1,5 +1,15 @@
 """Unit tests for Ollama status detection and web UI status rendering."""
 
+import os
+import tempfile
+
+# Never touch data/expenses.db: point the app at a throwaway DB before any
+# core/web import reads the path (app_spec.md §11).
+os.environ.setdefault(
+    "EXPENSE_TRACKER_DB",
+    os.path.join(tempfile.mkdtemp(prefix="expense-tests-"), "expenses.db"),
+)
+
 import unittest
 from unittest.mock import MagicMock, patch
 

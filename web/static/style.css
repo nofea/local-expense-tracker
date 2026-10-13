@@ -2,8 +2,7 @@
    Expense Tracker — Premium Dark Theme
    ====================================================================== */
 
-/* --- Google Font import --- */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+/* --- Fonts: no remote imports (local-only); Inter is used if installed --- */
 
 /* --- CSS Custom Properties --- */
 :root {
