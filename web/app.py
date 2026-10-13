@@ -43,9 +43,21 @@ _UPLOADS_DIR.mkdir(exist_ok=True)
 # App setup
 # ---------------------------------------------------------------------------
 
+def _global_template_context(request: Request) -> dict:
+    """Inject Ollama connectivity state into all template renders."""
+    status = is_ollama_available()
+    return {
+        "ollama_status": status,
+        "ollama_available": status,
+    }
+
+
 app = FastAPI(title="Expense Tracker", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(_WEB_DIR / "static")), name="static")
-templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
+templates = Jinja2Templates(
+    directory=str(_WEB_DIR / "templates"),
+    context_processors=[_global_template_context],
+)
 
 # Ensure DB is initialised on startup
 db.init_db()
@@ -59,6 +71,23 @@ def _now() -> tuple[int, int]:
     """Return (year, month) for the current date."""
     today = datetime.today()
     return today.year, today.month
+
+
+# ---------------------------------------------------------------------------
+# Routes — System & Status
+# ---------------------------------------------------------------------------
+
+@app.get("/api/ollama-status", response_class=HTMLResponse)
+async def ollama_status_badge(request: Request):
+    """Return partial HTML for Ollama status indicator badge (used by HTMX)."""
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/ollama_status.html",
+        context={
+            "request": request,
+            "ollama_status": is_ollama_available(force=True),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +139,7 @@ async def upload_page(request: Request):
             "request": request,
             "models": models,
             "ollama_available": ollama_ok,
+            "ollama_status": ollama_ok,
         },
     )
 
@@ -125,15 +155,23 @@ async def upload_file(
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Run ingestion pipeline
-    try:
-        result = process_file(dest, model=model)
-    except Exception as exc:
-        log.exception("Ingestion failed")
+    # Guard: check Ollama availability before starting pipeline
+    if not is_ollama_available():
         result = None
-        error = str(exc)
+        error = (
+            "Ollama is not running or unreachable at localhost:11434. "
+            "Please ensure Ollama is installed and running ('ollama serve') before processing."
+        )
     else:
-        error = None
+        # Run ingestion pipeline
+        try:
+            result = process_file(dest, model=model)
+        except Exception as exc:
+            log.exception("Ingestion failed")
+            result = None
+            error = str(exc)
+        else:
+            error = None
 
     # Get updated model list for re-rendering
     models = list_available_models()
