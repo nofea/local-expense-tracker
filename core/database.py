@@ -79,6 +79,15 @@ def get_or_create_account(
         conn.close()
 
 
+def list_accounts(db_path: Optional[str | Path] = None) -> list[sqlite3.Row]:
+    """All accounts (id, name, kind, institution), by name."""
+    conn = connect(db_path)
+    try:
+        return conn.execute("SELECT * FROM accounts ORDER BY name").fetchall()
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Transaction CRUD
 # ---------------------------------------------------------------------------
@@ -174,6 +183,7 @@ def _filters(
     search: Optional[str],
     uncategorized: bool = False,
     transfers: str = "show",
+    account_id: Optional[int] = None,
 ) -> tuple[str, list[object]]:
     """WHERE clause for the transaction list.
 
@@ -202,6 +212,10 @@ def _filters(
     if uncategorized:
         clauses.append("t.category = 'Uncategorized' AND t.is_transfer = 0")
 
+    if account_id is not None:
+        clauses.append("t.account_id = ?")
+        params.append(account_id)
+
     if transfers == "hide":
         clauses.append("t.is_transfer = 0")
     elif transfers == "only":
@@ -219,12 +233,13 @@ def get_transactions(
     search: Optional[str] = None,
     uncategorized: bool = False,
     transfers: str = "show",
+    account_id: Optional[int] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[TransactionRecord]:
     """Fetch transactions with optional filters, newest first."""
     conn = connect(db_path)
-    where, params = _filters(year, month, category, search, uncategorized, transfers)
+    where, params = _filters(year, month, category, search, uncategorized, transfers, account_id)
     sql = (
         "SELECT t.*, s.file_name AS source_file "
         "FROM transactions t JOIN statements s ON s.id = t.statement_id"
@@ -250,10 +265,11 @@ def get_transaction_count(
     search: Optional[str] = None,
     uncategorized: bool = False,
     transfers: str = "show",
+    account_id: Optional[int] = None,
 ) -> int:
     """Count transactions with optional filters."""
     conn = connect(db_path)
-    where, params = _filters(year, month, category, search, uncategorized, transfers)
+    where, params = _filters(year, month, category, search, uncategorized, transfers, account_id)
     try:
         return conn.execute(f"SELECT COUNT(*) FROM transactions t{where}", params).fetchone()[0]
     finally:

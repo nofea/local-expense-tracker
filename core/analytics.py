@@ -3,7 +3,8 @@
 Every function opens its own connection, runs a query, and returns
 Pydantic model instances ready for serialisation.  Sums are computed on
 integer ``amount_minor`` and converted to major units only at the end.
-Transfers (``is_transfer = 1``) are excluded everywhere.
+Transfers (``is_transfer = 1``) are excluded everywhere.  Every function
+takes an optional *account_id*; ``None`` means all accounts.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ _INCOME_EXPENSE = """
         COALESCE(SUM(CASE WHEN amount_minor > 0 THEN amount_minor ELSE 0 END), 0) AS income,
         COALESCE(SUM(CASE WHEN amount_minor < 0 THEN -amount_minor ELSE 0 END), 0) AS expense
     FROM transactions
-    WHERE transaction_date LIKE ? AND is_transfer = 0
+    WHERE transaction_date LIKE ? AND is_transfer = 0 AND (? IS NULL OR account_id = ?)
 """
 
 
@@ -29,12 +30,16 @@ _INCOME_EXPENSE = """
 # ---------------------------------------------------------------------------
 
 def get_monthly_summary(
-    year: int, month: int, db_path: Optional[str | Path] = None
+    year: int,
+    month: int,
+    db_path: Optional[str | Path] = None,
+    *,
+    account_id: Optional[int] = None,
 ) -> MonthlySummary:
     conn = _conn(db_path)
     prefix = f"{year:04d}-{month:02d}-%"
     try:
-        row = conn.execute(_INCOME_EXPENSE, (prefix,)).fetchone()
+        row = conn.execute(_INCOME_EXPENSE, (prefix, account_id, account_id)).fetchone()
         income, expense = row["income"], row["expense"]
         return MonthlySummary(
             year=year,
@@ -52,7 +57,11 @@ def get_monthly_summary(
 # ---------------------------------------------------------------------------
 
 def get_category_breakdown(
-    year: int, month: int, db_path: Optional[str | Path] = None
+    year: int,
+    month: int,
+    db_path: Optional[str | Path] = None,
+    *,
+    account_id: Optional[int] = None,
 ) -> list[CategoryBreakdown]:
     conn = _conn(db_path)
     prefix = f"{year:04d}-{month:02d}-%"
@@ -62,10 +71,11 @@ def get_category_breakdown(
             SELECT category, -SUM(amount_minor) AS total
             FROM transactions
             WHERE transaction_date LIKE ? AND amount_minor < 0 AND is_transfer = 0
+              AND (? IS NULL OR account_id = ?)
             GROUP BY category
             ORDER BY total DESC
             """,
-            (prefix,),
+            (prefix, account_id, account_id),
         ).fetchall()
 
         grand_total = sum(r["total"] for r in rows) or 1
@@ -90,6 +100,7 @@ def get_monthly_trend(
     db_path: Optional[str | Path] = None,
     *,
     as_of: Optional[date] = None,
+    account_id: Optional[int] = None,
 ) -> list[MonthlyTrend]:
     """Return income/expense per month for the last *num_months* months
     ending with the month of *as_of* (default: today)."""
@@ -102,7 +113,7 @@ def get_monthly_trend(
             y, m = divmod(today.year * 12 + (today.month - 1) - i, 12)
             m += 1
             prefix = f"{y:04d}-{m:02d}-%"
-            row = conn.execute(_INCOME_EXPENSE, (prefix,)).fetchone()
+            row = conn.execute(_INCOME_EXPENSE, (prefix, account_id, account_id)).fetchone()
             results.append(
                 MonthlyTrend(
                     month_label=f"{y:04d}-{m:02d}",
@@ -120,15 +131,20 @@ def get_monthly_trend(
 # ---------------------------------------------------------------------------
 
 def get_uncategorized_count(
-    year: int, month: int, db_path: Optional[str | Path] = None
+    year: int,
+    month: int,
+    db_path: Optional[str | Path] = None,
+    *,
+    account_id: Optional[int] = None,
 ) -> int:
     """Non-transfer rows in the month still in ``Uncategorized`` (§8)."""
     conn = _conn(db_path)
     try:
         row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM transactions "
-            "WHERE transaction_date LIKE ? AND category = 'Uncategorized' AND is_transfer = 0",
-            (f"{year:04d}-{month:02d}-%",),
+            "WHERE transaction_date LIKE ? AND category = 'Uncategorized' AND is_transfer = 0 "
+            "AND (? IS NULL OR account_id = ?)",
+            (f"{year:04d}-{month:02d}-%", account_id, account_id),
         ).fetchone()
         return row["cnt"]
     finally:
@@ -144,6 +160,8 @@ def get_top_merchants(
     month: int,
     limit: int = 10,
     db_path: Optional[str | Path] = None,
+    *,
+    account_id: Optional[int] = None,
 ) -> list[dict]:
     conn = _conn(db_path)
     prefix = f"{year:04d}-{month:02d}-%"
@@ -156,11 +174,12 @@ def get_top_merchants(
                 COUNT(*) AS tx_count
             FROM transactions
             WHERE transaction_date LIKE ? AND amount_minor < 0 AND is_transfer = 0
+              AND (? IS NULL OR account_id = ?)
             GROUP BY merchant
             ORDER BY total DESC
             LIMIT ?
             """,
-            (prefix, limit),
+            (prefix, account_id, account_id, limit),
         ).fetchall()
         return [{**dict(r), "total": from_minor(r["total"])} for r in rows]
     finally:

@@ -15,7 +15,7 @@ pip install -r requirements.txt     # Python 3.11+
 
 python run_web.py                   # Web UI on [web] host:port from config.toml (default http://127.0.0.1:8000)
 python run_web.py --dev             # same, with auto-reload
-python -m tui.app                   # Terminal UI (keys: d dashboard, t transactions, q quit)
+python -m tui.app                   # Terminal UI: d/t/q screens, ←/→ month, PgUp/PgDn page, / search, a account, c category, x transfer, r refresh
 
 # Tests (stdlib unittest; pytest is not in requirements)
 python -m unittest discover tests     # tests set EXPENSE_TRACKER_DB to a temp file; never the real DB
@@ -51,6 +51,10 @@ The review UI (`/imports/{id}`) re-renders `partials/review_body.html` after eve
 
 **Web UI** (`web/app.py`): server-rendered Jinja2 templates with HTMX. POST/DELETE routes return fragments from `templates/partials/` rather than full pages, so new interactive features should follow that pattern. A Jinja `context_processors` hook injects `ollama_status` into every template (it drives the status badge in `base.html`). `is_ollama_available()` caches its result for 3 seconds, and `/api/ollama-status` bypasses the cache with `force=True`. Charts are hand-rolled SVG in `web/static/charts.js` with no JS dependencies. Static assets are local only (HTMX is vendored at `web/static/htmx.min.js`, with no remote fonts or CDNs); `tests/test_appendix_a_fixes.py` enforces this. Dashboard and transactions query params are clamped, and an invalid month falls back to the current one.
 
-**TUI** (`tui/`): a Textual app with `DashboardScreen` and `TransactionsScreen`, which call `core.analytics` / `core.database` directly. Styling lives in `tui/style.tcss`.
+**TUI** (`tui/`, spec §7.2): a Textual app with `DashboardScreen` and `TransactionsScreen`, which call `core.analytics` / `core.database` directly. Styling lives in `tui/style.tcss`.
+* **Shared state:** the selected month (`app.year`, `app.month`), `app.account_id` (None = all) and `app.db_path` (tests pass a temp DB) live on `ExpenseTrackerTUI`. Screens read them in their refresh method, which runs on mount and on `on_screen_resume`.
+* **Binding rules:** app keys (`d`/`t`/`q`) must **not** be `priority`, or they would steal letters typed into `PromptScreen` (the modal used for search and category entry). Screen keys that `DataTable` also binds (←/→/PgUp/PgDn) **must** be `priority`, or the focused table swallows them.
+* **Edits:** they go through `set_manual_category`, like the web UI. The TUI never starts ingestion jobs and must not call `jobs.start()`.
+* **Tests:** `tests/test_tui.py` drives it with `App.run_test()` / Pilot.
 
 `data/` is gitignored and created automatically. `uploads/` is no longer written to (statements aren't retained); any files left there from earlier versions can be deleted.

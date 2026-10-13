@@ -369,7 +369,7 @@ Each phase is done when its tests pass with `python -m unittest discover tests`.
 
 ## Appendix A: Implementation Gap Checklist (code as of `3c9b5f7`)
 
-Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10) `tests/test_config_and_llm.py` (items 20 and 22–24) and `tests/test_ledger_editing.py` (items 14, 15 and 17).
+Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10) `tests/test_config_and_llm.py` (items 20 and 22–24) `tests/test_ledger_editing.py` (items 14, 15 and 17) and `tests/test_tui.py` (item 18).
 
 1. ✅ 🔴 **Path traversal / overwrite on upload.** `web/app.py::upload_file` writes to `uploads/<client filename>` without sanitizing it. Fix: §3.1 and §9.6.
 2. ✅ 🔴 **Trend skips or duplicates months.** `core/analytics.py::get_monthly_trend` subtracts `i*30` days (e.g. Mar 1 − 30d = Jan 30, so Feb is missing). Fix: calendar month arithmetic (§8).
@@ -384,11 +384,24 @@ Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = mi
 11. 🟠 **CSV always goes through the LLM.** Add `csv_mappings` and a deterministic parser (§3.2).
 12. 🟠 **Password-protected PDFs** are not supported (§3.2).
 13. ✅ 🟠 **Rules engine semantics.** `database.apply_rules` overwrites every match, orders rules alphabetically, and never reverts. Its WHERE clause `(category='Uncategorized' OR category != ?)` reduces to `category != ?`. Fix: rewrite per §6. Done in `database._run_rules_engine`. Deleting a rule now re-runs the engine.
-14. ◐ 🟠 **No manual edit or delete of transactions** in either UI. `database.delete_transaction` exists but no route or UI calls it. Done in the web UI: each transaction row can be edited in place (category, merchant and transfer flag, saved as `manual`), reset to rules, or deleted, and the editor has a "Create rule…" link that prefills the rules form. The transactions list also gained the §7.1 "uncategorized only" and "transfers" filters. The TUI side is item 18.
+14. ✅ 🟠 **No manual edit or delete of transactions** in either UI. `database.delete_transaction` exists but no route or UI calls it. Done in the web UI: each transaction row can be edited in place (category, merchant and transfer flag, saved as `manual`), reset to rules, or deleted, and the editor has a "Create rule…" link that prefills the rules form. The transactions list also gained the §7.1 "uncategorized only" and "transfers" filters. The TUI can set a category and toggle the transfer flag (item 18). Deleting and resetting stay web-only.
 15. ✅ 🟠 **No imports page and no undo for an import** (§7.1). The `/imports` list and discard-in-review exist. `/imports` can now delete a committed import, cascading to its transactions, after a confirmation. It can also remove failed or discarded imports. Running jobs can't be deleted. Afterwards the same file can be uploaded again.
 16. ✅ 🟠 **Transfers are counted as income and expense** in all analytics (§8). The analytics queries now filter on `is_transfer = 0`. There is no UI to flag a transfer yet, except a `mark_transfer` rule.
 17. ✅ 🟠 **Uncategorized count is global**, not per month, and doesn't link anywhere (§8, §7.1). The count is now per month and links to `/transactions?year=…&month=…&uncategorized=1`. The TUI dashboard uses the per-month count too.
-18. 🟠 **TUI gaps.** No page keys, so only the first 50 rows per month are reachable. Dashboard is fixed to the current month. No search, category edit, transfer toggle or account filter (§7.2).
+18. ✅ 🟠 **TUI gaps.** No page keys, so only the first 50 rows per month are reachable. Dashboard is fixed to the current month. No search, category edit, transfer toggle or account filter (§7.2). Done:
+    * `←`/`→` change the month on both screens. The month and account filter live on the app, so both screens stay in sync.
+    * `PgUp`/`PgDn` page through the transactions.
+    * `/` searches.
+    * `a` cycles the account filter, which is also now in `core.analytics` and the transaction queries (§8).
+    * `c` sets the category and `x` toggles transfer. Both are manual edits.
+    * `r` refreshes.
+
+    Also fixed:
+    * `←`/`→` never worked, because the focused `DataTable` swallowed them. They are now priority bindings on the screen.
+    * `d`, `t` and `q` were priority bindings, which would have stolen typed text.
+    * Header and Footer only rendered on the app's base screen.
+
+    Pilot tests are in `tests/test_tui.py`.
 19. ✅ 🟠 **Uploads retained forever** in `uploads/`. Fix: delete after extraction (§3.2, §9.3). The worker deletes the file as soon as its text is read, on success and failure alike.
 20. ✅ 🟡 **Config scattered.** The model is hardcoded in `ollama_client.DEFAULT_MODEL` and again in `web/app.py` `Form("llama3.1")`. `₹` / `INR` are hardcoded in `tui/screens/*.py`, `web/templates/*.html` and `web/static/charts.js`. Fix: `config.toml` (§1.1). Done in `core/config.py`. Money formatting is shared by both UIs (`models.format_money`), and the charts read the currency from `<body data-currency>`. The §9.1 and §9.7 warnings for non-local hosts are done too (startup log, plus a UI banner for the LLM host).
 21. ✅ 🟡 **Inconsistent connections.** `core/analytics.py::_conn` and `categorizer.preview_rule_matches` open raw sqlite connections without WAL or `busy_timeout`. Fix: use the single helper (§2).
