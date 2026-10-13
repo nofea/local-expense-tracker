@@ -13,7 +13,8 @@ All commands run from the repo root — modules use absolute imports (`from core
 ```bash
 pip install -r requirements.txt     # Python 3.11+
 
-python run_web.py                   # Web UI at http://127.0.0.1:8000 (uvicorn, reload=True)
+python run_web.py                   # Web UI on [web] host:port from config.toml (default http://127.0.0.1:8000)
+python run_web.py --dev             # same, with auto-reload
 python -m tui.app                   # Terminal UI (keys: d dashboard, t transactions, q quit)
 
 # Tests (stdlib unittest; pytest is not in requirements)
@@ -38,9 +39,9 @@ Three layers: `core/` holds all logic and data access; `web/` and `tui/` are thi
 
 The review UI (`/imports/{id}`) re-renders `partials/review_body.html` after every action, because one edit can change other rows' duplicate flags and the reconciliation. Row Save buttons post their row's inputs with `hx-include="closest tr"`. Templates format money with the `money` and `major` filters (integer minor units in, string out).
 
-**Keep in sync:**
-- The LLM output schema is defined twice: as Pydantic models in `core/models.py` (`ExtractedTransaction` / `TransactionExtractionResult`) and as hand-written JSON in `SYSTEM_PROMPT` in `core/ollama_client.py`.
-- The default model is `DEFAULT_MODEL` in `ollama_client.py`, and it is hardcoded again as the `Form("llama3.1")` default in `web/app.py`.
+**Configuration** (`core/config.py`, spec §1.1): `get_config()` loads `config.toml` once (git-ignored; see `config.example.toml`) or the file named by `EXPENSE_TRACKER_CONFIG`. Never hardcode the LLM host or model, the currency, the DB path or the web host/port; read them from config. Format money with `models.format_money` (both UIs) or the Jinja filters `money` (minor units), `currency` (major-unit floats) and `major` (editable input). Templates get `config` from the context processor, and `base.html` shows a warning banner when `config.llm_is_local` is false. Tests that need other settings patch `get_config` in the module under test (e.g. `web.app.get_config`, `core.ollama_client.get_config`); `get_config` is `lru_cache`d, so setting env vars after import has no effect.
+
+**LLM calls** (`core/ollama_client.py`): every call goes through `_chat`, which uses `ollama.Client(host=..., timeout=chunk_timeout_s)` with `format=` the Pydantic schema and `temperature=0`. Output schemas live **only** in `core/models.py`, and prompts must not restate them. Invalid output is retried `max_retries` times and then raises `OutputInvalid`; a timeout raises `ExtractionTimeout` and is not retried. Exception messages and INFO+ logs must never include model output or statement text (spec §9.5), because they end up in `statements.error`.
 
 **Database** (`core/database.py`, `core/migrations.py`): there is no ORM. The schema is spec §2 (v2), versioned with `PRAGMA user_version`. `init_db()` calls `migrations.migrate()` on every startup. It creates v2 on an empty file, or migrates a v0/v1 file per spec Appendix B (backup to `expenses.db.v1.bak`, one transaction that rolls back on failure). DDL runs statement by statement inside an explicit `BEGIN` (never `executescript`, which commits). All connections, including analytics, go through `database.connect()` (WAL, foreign keys, `busy_timeout=5000`), and every function accepts a `db_path` override. The default is `data/expenses.db`, or the `EXPENSE_TRACKER_DB` env var when set. Money is integer `amount_minor` (paise), and `models.to_minor` / `from_minor` are the only conversions. `TransactionRecord.amount` is a display-only property, so never sum it. Queries join `statements` to expose `source_file`. Dates are `YYYY-MM-DD` text, and month filtering uses `LIKE 'YYYY-MM-%'`. Amounts are negative for money out, and analytics excludes `is_transfer = 1` rows.
 

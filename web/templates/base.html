@@ -9,7 +9,7 @@
     <script src="/static/htmx.min.js" defer></script>
     <script src="/static/charts.js" defer></script>
 </head>
-<body>
+<body data-currency="{{ config.money.currency_code }}">
     <div class="app-shell">
         <!-- Sidebar Navigation -->
         <nav class="sidebar">
@@ -46,6 +46,13 @@
 
         <!-- Main Content -->
         <main class="main-content">
+            {% if not config.llm_is_local %}
+            <div class="flash flash-warn" role="alert">
+                ⚠ <strong>Statement text is leaving this machine.</strong>
+                The LLM host is set to {{ config.llm.host }}, which is not local.
+                Change <code>[llm] host</code> in config.toml to keep everything local.
+            </div>
+            {% endif %}
             {% block content %}{% endblock %}
         </main>
     </div>

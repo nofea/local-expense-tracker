@@ -34,6 +34,11 @@
 
 There is a single `config.toml` at the repo root. Every key is optional, and the values below are the defaults. No other module may hardcode these values.
 
+* `config.toml` is git-ignored. `config.example.toml` documents every key, and `EXPENSE_TRACKER_CONFIG` can point at another file.
+* Unknown keys, wrong types and out-of-range values stop startup with an error that names the key.
+* `EXPENSE_TRACKER_DB` overrides `storage.db_path`.
+* `minor_units` must not change once data exists, because stored amounts and transaction ids depend on it.
+
 ```toml
 [llm]
 host = "http://localhost:11434"
@@ -180,7 +185,7 @@ Ingestion runs as a **background job**: one job at a time, in a worker thread, s
 
 ### 3.3 LLM extraction (PDFs and unmapped CSVs)
 * **Chunking:** each chunk holds one or more **whole pages** (or whole lines for CSV text), up to `CHUNK_SIZE = 6000` characters. A page longer than the limit is split on line boundaries. Chunks **do not overlap**, because overlap would create duplicate rows that per-statement dedup (§5) cannot tell apart from genuine repeats.
-* **Calls:** one `ollama.chat` call per chunk, with `format = TransactionExtractionResult.model_json_schema()`, `temperature = 0`, and `chunk_timeout_s`. A chunk whose output fails schema validation is retried up to `max_retries` times. A chunk that still fails is recorded in `statements.error` but does not abort the job. The review screen shows it as a "chunk N failed" banner.
+* **Calls:** one `ollama.chat` call per chunk, with `format = TransactionExtractionResult.model_json_schema()`, `temperature = 0`, and `chunk_timeout_s`. A chunk whose output fails schema validation is retried up to `max_retries` times. A timeout is not retried, since that would multiply the wait; the chunk fails at once. A chunk that still fails is recorded in `statements.error` but does not abort the job. The review screen shows it as a "chunk N failed" banner.
 * **Statement metadata:** the first and last chunks are also asked for `period_start`, `period_end`, `opening_balance` and `closing_balance` (all nullable), through a separate small schema. The user can edit these in review.
 * **Prompt:** the system prompt describes the task and the sign convention in §2, including the credit-card rules, plus one short example. It does **not** restate the JSON schema, which is enforced by `format` and defined only once, in Pydantic.
 * **Progress:** `progress_done` and `progress_total` are updated after each chunk.
@@ -319,7 +324,7 @@ All figures are scoped to one month by `transaction_date LIKE 'YYYY-MM-%'`, opti
 2. All JS and CSS are served locally; HTMX is vendored. No external requests from the browser.
 3. Original statement files are deleted right after text extraction (§3.2). Only `file_name` and `file_sha256` are kept.
 4. PDF passwords are never written to disk or logs.
-5. Logs never contain transaction descriptions or amounts at INFO level or above.
+5. Logs never contain transaction descriptions or amounts at INFO level or above. Neither do error messages stored in `statements.error`: an LLM output error reports only a count of validation errors, never the output.
 6. Uploads are capped (default 20 MB) and only `.pdf` and `.csv` are accepted. The filename is never used as a path.
 7. If `llm.host` is not loopback, the UI shows a persistent warning that statement text is leaving this machine.
 
@@ -364,7 +369,7 @@ Each phase is done when its tests pass with `python -m unittest discover tests`.
 
 ## Appendix A: Implementation Gap Checklist (code as of `3c9b5f7`)
 
-Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10).
+Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = missing spec feature, 🟡 = cleanup. ✅ = done, ◐ = partly done. Regression tests are in `tests/test_appendix_a_fixes.py` (items 1–4 and 7), `tests/test_schema_v2.py` (the schema, migration and rules items) and `tests/test_review_pipeline.py` (items 6, 9 and 10) and `tests/test_config_and_llm.py` (items 20 and 22–24).
 
 1. ✅ 🔴 **Path traversal / overwrite on upload.** `web/app.py::upload_file` writes to `uploads/<client filename>` without sanitizing it. Fix: §3.1 and §9.6.
 2. ✅ 🔴 **Trend skips or duplicates months.** `core/analytics.py::get_monthly_trend` subtracts `i*30` days (e.g. Mar 1 − 30d = Jan 30, so Feb is missing). Fix: calendar month arithmetic (§8).
@@ -385,11 +390,11 @@ Ordered by priority. 🔴 = bug or security issue in the current code, 🟠 = mi
 17. 🟠 **Uncategorized count is global**, not per month, and doesn't link anywhere (§8, §7.1).
 18. 🟠 **TUI gaps.** No page keys, so only the first 50 rows per month are reachable. Dashboard is fixed to the current month. No search, category edit, transfer toggle or account filter (§7.2).
 19. ✅ 🟠 **Uploads retained forever** in `uploads/`. Fix: delete after extraction (§3.2, §9.3). The worker deletes the file as soon as its text is read, on success and failure alike.
-20. 🟡 **Config scattered.** The model is hardcoded in `ollama_client.DEFAULT_MODEL` and again in `web/app.py` `Form("llama3.1")`. `₹` / `INR` are hardcoded in `tui/screens/*.py`, `web/templates/*.html` and `web/static/charts.js`. Fix: `config.toml` (§1.1).
+20. ✅ 🟡 **Config scattered.** The model is hardcoded in `ollama_client.DEFAULT_MODEL` and again in `web/app.py` `Form("llama3.1")`. `₹` / `INR` are hardcoded in `tui/screens/*.py`, `web/templates/*.html` and `web/static/charts.js`. Fix: `config.toml` (§1.1). Done in `core/config.py`. Money formatting is shared by both UIs (`models.format_money`), and the charts read the currency from `<body data-currency>`. The §9.1 and §9.7 warnings for non-local hosts are done too (startup log, plus a UI banner for the LLM host).
 21. ✅ 🟡 **Inconsistent connections.** `core/analytics.py::_conn` and `categorizer.preview_rule_matches` open raw sqlite connections without WAL or `busy_timeout`. Fix: use the single helper (§2).
-22. 🟡 **The JSON schema is duplicated** in `SYSTEM_PROMPT` and in Pydantic. The prompt doesn't explain the credit-card sign convention. Fix: §3.3.
-23. 🟡 **No per-chunk timeout or retry** in `ollama_client.extract_transactions`.
-24. 🟡 **`reload=True` in `run_web.py`.** Make it a `--dev` flag.
+22. ✅ 🟡 **The JSON schema is duplicated** in `SYSTEM_PROMPT` and in Pydantic. The prompt doesn't explain the credit-card sign convention. Fix: §3.3. Done. The prompt now covers the bank and card sign conventions, says balance, total and header lines are not transactions, and includes one example. In a live run with `qwen2.5-coder:14b`, it stopped emitting the "Opening Balance" row that the old prompt produced. Also fixed: parse errors used to embed the model output, and therefore descriptions, in ERROR logs and `statements.error` (§9.5).
+23. ✅ 🟡 **No per-chunk timeout or retry** in `ollama_client.extract_transactions`. Done. Every call uses `ollama.Client(host, timeout=chunk_timeout_s)`. A timeout raises `ExtractionTimeout` (checked against a real Ollama). Invalid output is retried up to `max_retries` times and then raises `OutputInvalid`.
+24. ✅ 🟡 **`reload=True` in `run_web.py`.** Make it a `--dev` flag. Done, and host and port come from `[web]`.
 25. ◐ 🟡 **Web tests read the real `data/expenses.db`**, and the only tests cover Ollama status. Fix: §11 test strategy. Tests now set `EXPENSE_TRACKER_DB` to a temporary file before importing `core`. Some Ollama-status tests still call the real local Ollama, because `list_available_models` is not mocked.
 
 ## Appendix B: Migration v1 → v2

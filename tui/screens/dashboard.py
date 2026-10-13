@@ -9,6 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Label, Static
 
+from core.models import format_money
 from core.analytics import (
     get_category_breakdown,
     get_monthly_summary,
@@ -52,7 +53,7 @@ class CategoryBar(Static):
         bar_len = max(1, int(self._percentage / 100 * self._max_width))
         bar = "█" * bar_len + "░" * (self._max_width - bar_len)
         yield Label(
-            f"  {self._category:<20s} {bar} ₹{self._total:>10,.0f}  ({self._percentage:.1f}%)"
+            f"  {self._category:<20s} {bar} {format_money(self._total, decimals=0):>11}  ({self._percentage:.1f}%)"
         )
 
 
@@ -67,9 +68,9 @@ class DashboardScreen(Screen):
         yield Vertical(
             Label(f" 📊 Dashboard — {today.strftime('%B %Y')}", id="dash-title", classes="screen-title"),
             Horizontal(
-                StatCard("INCOME", "₹0", "income-card"),
-                StatCard("EXPENSES", "₹0", "expense-card"),
-                StatCard("SAVINGS", "₹0", "savings-card"),
+                StatCard("INCOME", format_money(0, decimals=0), "income-card"),
+                StatCard("EXPENSES", format_money(0, decimals=0), "expense-card"),
+                StatCard("SAVINGS", format_money(0, decimals=0), "savings-card"),
                 StatCard("UNCATEGORIZED", "0", "warning-card"),
                 id="stats-row",
             ),
@@ -93,9 +94,9 @@ class DashboardScreen(Screen):
         cards = self.query(StatCard)
         card_list = list(cards)
         if len(card_list) >= 4:
-            card_list[0].update_value(f"₹{summary.total_income:,.0f}")
-            card_list[1].update_value(f"₹{summary.total_expense:,.0f}")
-            card_list[2].update_value(f"₹{summary.net_savings:,.0f}")
+            card_list[0].update_value(format_money(summary.total_income, decimals=0))
+            card_list[1].update_value(format_money(summary.total_expense, decimals=0))
+            card_list[2].update_value(format_money(summary.net_savings, decimals=0))
             card_list[3].update_value(str(uncategorized))
 
         # Update category bars

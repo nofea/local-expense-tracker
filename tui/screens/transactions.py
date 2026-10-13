@@ -11,6 +11,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Label
 
 from core.database import get_transactions, get_transaction_count
+from core.models import format_money
 
 
 class TransactionsScreen(Screen):
@@ -61,7 +62,7 @@ class TransactionsScreen(Screen):
         total = get_transaction_count(year=self._year, month=self._month)
 
         for tx in txns:
-            amount_str = f"{'+'if tx.amount >= 0 else ''}₹{abs(tx.amount):,.2f}"
+            amount_str = format_money(tx.amount_minor, minor=True, signed=True)
             desc = tx.cleaned_merchant or tx.raw_description
             if len(desc) > 40:
                 desc = desc[:37] + "…"

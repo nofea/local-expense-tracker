@@ -17,3 +17,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local settings (copy from config.example.toml)
+config.toml

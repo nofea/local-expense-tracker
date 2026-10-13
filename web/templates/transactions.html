@@ -68,7 +68,7 @@
                     <td><span class="category-badge">{{ tx.category }}</span></td>
                     <td style="text-align:right;">
                         <span class="{{ 'amount-positive' if tx.amount >= 0 else 'amount-negative' }}">
-                            {% if tx.amount >= 0 %}+{% endif %}₹{{ "{:,.2f}".format(tx.amount|abs) }}
+                            {{ tx.amount_minor | money }}
                         </span>
                     </td>
                     <td style="font-size:0.8rem; color:var(--text-muted);">{{ tx.source_file }}</td>

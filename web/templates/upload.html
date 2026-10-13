@@ -28,16 +28,16 @@
             <select name="model" id="model-select">
                 {% if models|length > 0 %}
                     {% for m in models %}
-                    <option value="{{ m.name }}">{{ m.name }}</option>
+                    <option value="{{ m.name }}" {% if m.name in (config.llm.model, config.llm.model ~ ':latest') %}selected{% endif %}>{{ m.name }}</option>
                     {% endfor %}
                 {% else %}
-                    <option value="llama3.1">llama3.1 (default)</option>
+                    <option value="{{ config.llm.model }}">{{ config.llm.model }} (default)</option>
                 {% endif %}
             </select>
 
             {% if not ollama_available %}
             <span style="color: var(--expense); font-size: 0.82rem;">
-                ⚠ Ollama is not reachable at localhost:11434
+                ⚠ Ollama is not reachable at {{ config.llm.host }}
             </span>
             {% endif %}
         </div>

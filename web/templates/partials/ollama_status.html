@@ -1,4 +1,4 @@
-<div class="ollama-status" id="ollama-status" hx-get="/api/ollama-status" hx-trigger="every 10s, click" hx-swap="outerHTML" title="{% if ollama_status %}Connected to Ollama (localhost:11434){% else %}Ollama is offline or unreachable at localhost:11434 (click to recheck){% endif %}">
+<div class="ollama-status" id="ollama-status" hx-get="/api/ollama-status" hx-trigger="every 10s, click" hx-swap="outerHTML" title="{% if ollama_status %}Connected to Ollama ({{ config.llm.host }}){% else %}Ollama is offline or unreachable at {{ config.llm.host }} (click to recheck){% endif %}">
     <span class="status-dot {% if ollama_status %}online{% else %}offline{% endif %}"></span>
     Ollama {% if ollama_status %}Connected{% else %}Offline{% endif %}
 </div>

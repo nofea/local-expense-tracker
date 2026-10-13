@@ -1,18 +1,18 @@
 """SQLite database layer for the expense tracker (schema v2, app_spec.md §2).
 
 All functions accept an optional *db_path* so callers can override the
-default location (``data/expenses.db`` relative to the project root, or the
-``EXPENSE_TRACKER_DB`` environment variable when set).
+default location (``storage.db_path`` in config.toml, default
+``data/expenses.db``, or the ``EXPENSE_TRACKER_DB`` environment variable).
 """
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
 from typing import Optional
 
 from core import migrations
+from core.config import get_config
 from core.models import (
     CategoryRule,
     TransactionRecord,
@@ -26,10 +26,7 @@ from core.models import (
 # Default DB path
 # ---------------------------------------------------------------------------
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_PATH = Path(
-    os.environ.get("EXPENSE_TRACKER_DB") or _PROJECT_ROOT / "data" / "expenses.db"
-)
+DEFAULT_DB_PATH = get_config().db_path
 
 
 def connect(db_path: Optional[str | Path] = None) -> sqlite3.Connection:

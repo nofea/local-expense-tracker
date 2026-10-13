@@ -108,7 +108,7 @@ class TestWebOllamaStatusRendering(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn("status-dot offline", res.text)
         self.assertIn("Ollama Offline", res.text)
-        self.assertIn("Ollama is not reachable at localhost:11434", res.text)
+        self.assertIn("Ollama is not reachable at http://localhost:11434", res.text)
 
     @patch("web.app.is_ollama_available", return_value=False)
     def test_transactions_page_shows_ollama_offline(self, mock_avail):

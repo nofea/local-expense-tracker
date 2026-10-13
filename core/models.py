@@ -8,6 +8,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, computed_field
 
+from core.config import get_config
+
 
 # ---------------------------------------------------------------------------
 # Transaction models
@@ -140,9 +142,9 @@ class MonthlyTrend(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Minor units per major unit (paise per rupee).  Moves to config.toml with
-# Appendix A item 20.
-MINOR_UNITS = 2
+# Decimal places of the currency (2: paise per rupee), from config.toml.
+# Fixed for the life of a database: amount_minor and transaction ids use it.
+MINOR_UNITS = get_config().money.minor_units
 
 
 def to_minor(amount: float | str | Decimal) -> int:
@@ -158,6 +160,32 @@ def to_minor(amount: float | str | Decimal) -> int:
 def from_minor(amount_minor: int) -> float:
     """Convert integer minor units to a major-unit float for display."""
     return amount_minor / 10**MINOR_UNITS
+
+
+def minor_to_input(amount_minor: Optional[int]) -> str:
+    """Minor units as a plain editable number, e.g. ``-1234.50``."""
+    return "" if amount_minor is None else f"{from_minor(amount_minor):.{MINOR_UNITS}f}"
+
+
+def format_money(
+    amount: Optional[float | int],
+    *,
+    minor: bool = False,
+    signed: bool = False,
+    decimals: Optional[int] = None,
+) -> str:
+    """Format an amount with the configured currency symbol, e.g. ``₹1,234.50``.
+
+    *amount* is in major units, or in minor units when *minor* is set.
+    *signed* prefixes ``+`` for positive values; negatives always get ``−``.
+    *decimals* defaults to the currency's ``minor_units``.
+    """
+    if amount is None:
+        return "—"
+    value = from_minor(amount) if minor else amount
+    places = MINOR_UNITS if decimals is None else decimals
+    sign = "−" if value < 0 else ("+" if signed and value > 0 else "")
+    return f"{sign}{get_config().money.currency_symbol}{abs(value):,.{places}f}"
 
 
 def normalize_description(raw_description: str) -> str:

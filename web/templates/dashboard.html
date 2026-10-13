@@ -22,17 +22,17 @@
 <div class="stats-grid animate-in">
     <div class="card stat-card income">
         <div class="stat-label">Total Income</div>
-        <div class="stat-value">₹{{ "{:,.0f}".format(summary.total_income) }}</div>
+        <div class="stat-value">{{ summary.total_income | currency(0) }}</div>
         <div class="stat-icon">📈</div>
     </div>
     <div class="card stat-card expense">
         <div class="stat-label">Total Expenses</div>
-        <div class="stat-value">₹{{ "{:,.0f}".format(summary.total_expense) }}</div>
+        <div class="stat-value">{{ summary.total_expense | currency(0) }}</div>
         <div class="stat-icon">📉</div>
     </div>
     <div class="card stat-card savings">
         <div class="stat-label">Net Savings</div>
-        <div class="stat-value">₹{{ "{:,.0f}".format(summary.net_savings) }}</div>
+        <div class="stat-value">{{ summary.net_savings | currency(0) }}</div>
         <div class="stat-icon">💎</div>
     </div>
     <div class="card stat-card uncategorized">
@@ -77,7 +77,7 @@
         {% for m in top_merchants %}
         <div class="merchant-row">
             <span class="merchant-name">{{ m.merchant }}</span>
-            <span class="merchant-amount">₹{{ "{:,.0f}".format(m.total) }}</span>
+            <span class="merchant-amount">{{ m.total | currency(0) }}</span>
         </div>
         {% endfor %}
     </div>

@@ -26,7 +26,8 @@ from core.analytics import (
     get_top_merchants,
 )
 from core.categorizer import add_rule, apply_all_rules, remove_rule
-from core.models import CategoryRule
+from core.config import get_config
+from core.models import CategoryRule, format_money, minor_to_input
 from core.ollama_client import is_ollama_available, list_available_models
 
 logging.basicConfig(level=logging.INFO)
@@ -48,11 +49,12 @@ _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 # ---------------------------------------------------------------------------
 
 def _global_template_context(request: Request) -> dict:
-    """Inject Ollama connectivity state into all template renders."""
+    """Inject Ollama connectivity state and config into all template renders."""
     status = is_ollama_available()
     return {
         "ollama_status": status,
         "ollama_available": status,
+        "config": get_config(),
     }
 
 
@@ -63,23 +65,14 @@ templates = Jinja2Templates(
     context_processors=[_global_template_context],
 )
 
-def _money(amount_minor: Optional[int], signed: bool = True) -> str:
-    """Format integer minor units as ₹1,234.56 (with +/- when *signed*)."""
-    if amount_minor is None:
-        return "—"
-    sign = ("+" if amount_minor > 0 else "−" if amount_minor < 0 else "") if signed else ""
-    if not signed and amount_minor < 0:
-        sign = "−"
-    return f"{sign}₹{abs(amount_minor) / 100:,.2f}"
-
-
-def _major(amount_minor: Optional[int]) -> str:
-    """Minor units as a plain editable number, e.g. -1234.50."""
-    return "" if amount_minor is None else f"{amount_minor / 100:.2f}"
-
-
-templates.env.filters["money"] = _money
-templates.env.filters["major"] = _major
+# money: integer minor units -> "+₹1,234.50"; currency: major-unit floats
+# (analytics results) -> "₹1,235" with *decimals* places; major: minor
+# units -> editable "1234.50".  Symbol and decimals come from config.toml.
+templates.env.filters["money"] = lambda v, signed=True: format_money(v, minor=True, signed=signed)
+templates.env.filters["currency"] = lambda v, decimals=None, signed=False: format_money(
+    v, decimals=decimals, signed=signed
+)
+templates.env.filters["major"] = minor_to_input
 templates.env.globals["issue_levels"] = validator.LEVELS
 templates.env.globals["issue_messages"] = validator.MESSAGES
 
@@ -198,7 +191,7 @@ async def upload_page(request: Request):
 async def upload_file(
     request: Request,
     file: UploadFile = File(...),
-    model: str = Form("llama3.1"),
+    model: str = Form(""),
 ):
     # The client filename is display text only — never a path (§3.1, §9.6).
     source_name = _sanitize_filename(file.filename)
@@ -215,9 +208,10 @@ async def upload_file(
         return failed(f"Unsupported file type '{ext or '(none)'}'. Upload a .pdf or .csv statement.")
     if not is_ollama_available():
         return failed(
-            "Ollama is not running or unreachable at localhost:11434. "
+            f"Ollama is not running or unreachable at {get_config().llm.host}. "
             "Please ensure Ollama is installed and running ('ollama serve') before processing."
         )
+    model = model.strip() or get_config().llm.model
 
     # Save under a generated name in the private job directory; the worker
     # deletes it as soon as the text is extracted (§3.2, §9.3).
