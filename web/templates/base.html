@@ -36,10 +36,7 @@
             </a>
 
             <div class="sidebar-footer">
-                <div class="ollama-status">
-                    <span class="status-dot {% if ollama_status|default(true) %}online{% else %}offline{% endif %}"></span>
-                    Ollama {% if ollama_status|default(true) %}Connected{% else %}Offline{% endif %}
-                </div>
+                {% include "partials/ollama_status.html" %}
             </div>
         </nav>
 
