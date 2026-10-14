@@ -146,3 +146,27 @@ FooterKey {
 Footer > .footer--highlight {
     background: #4f46e5;
 }
+
+/* --- Prompt (search / category) --- */
+PromptScreen {
+    align: center middle;
+    background: #0b0e17 70%;
+}
+
+#prompt {
+    width: 64;
+    height: auto;
+    padding: 1 2;
+    border: solid #4f46e5;
+    background: #111827;
+}
+
+#prompt-title {
+    color: #818cf8;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#prompt-input {
+    margin-bottom: 1;
+}

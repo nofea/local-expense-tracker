@@ -22,22 +22,54 @@
             <input type="file" name="file" accept=".pdf,.csv" required>
         </div>
 
+        <!-- Account (§3.1) and PDF password (§3.2) -->
+        <div class="form-row upload-options">
+            <div class="form-group">
+                <label for="account-select">Account</label>
+                <select name="account_id" id="account-select">
+                    {% for a in accounts %}
+                    <option value="{{ a.id }}">{{ a.name }}{% if a.kind == 'credit_card' %} (card){% endif %}</option>
+                    {% else %}
+                    <option value="">Default</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="new-account-name">…or a new account</label>
+                <input type="text" id="new-account-name" name="new_account_name" placeholder="e.g. HDFC Savings" autocomplete="off">
+            </div>
+            <div class="form-group" style="max-width: 160px;">
+                <label for="new-account-kind">New account type</label>
+                <select name="new_account_kind" id="new-account-kind">
+                    {% for k in account_kinds %}<option value="{{ k }}">{{ k | replace('_', ' ') }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="pdf-password">PDF password (optional)</label>
+                <input type="password" id="pdf-password" name="password" autocomplete="off"
+                       placeholder="Only for locked PDFs">
+            </div>
+        </div>
+        <p class="muted-line" style="margin-top: 0.5rem;">
+            Transactions are filed under this account. The password is used once to open the file and is never saved.
+        </p>
+
         <!-- Model selector -->
         <div class="model-selector">
             <label for="model-select">🤖 LLM Model:</label>
             <select name="model" id="model-select">
                 {% if models|length > 0 %}
                     {% for m in models %}
-                    <option value="{{ m.name }}">{{ m.name }}</option>
+                    <option value="{{ m.name }}" {% if m.name in (config.llm.model, config.llm.model ~ ':latest') %}selected{% endif %}>{{ m.name }}</option>
                     {% endfor %}
                 {% else %}
-                    <option value="llama3.1">llama3.1 (default)</option>
+                    <option value="{{ config.llm.model }}">{{ config.llm.model }} (default)</option>
                 {% endif %}
             </select>
 
             {% if not ollama_available %}
             <span style="color: var(--expense); font-size: 0.82rem;">
-                ⚠ Ollama is not reachable at localhost:11434
+                ⚠ Ollama is not reachable at {{ config.llm.host }}
             </span>
             {% endif %}
         </div>
@@ -50,7 +82,7 @@
             <span id="upload-spinner" class="htmx-indicator">
                 <span class="spinner"></span>
                 <span style="margin-left: 0.5rem; color: var(--text-muted); font-size: 0.88rem;">
-                    Processing with LLM…
+                    Uploading…
                 </span>
             </span>
         </div>
@@ -66,10 +98,10 @@
     </h3>
     <div style="color: var(--text-muted); font-size: 0.9rem; line-height: 1.8;">
         <p>1️⃣ Upload a PDF or CSV bank/credit card statement</p>
-        <p>2️⃣ Select the Ollama model to use for extraction</p>
-        <p>3️⃣ The LLM extracts transactions with dates, descriptions, and amounts</p>
-        <p>4️⃣ Duplicate detection prevents double-counting overlapping statements</p>
-        <p>5️⃣ Categorization rules are automatically applied to new transactions</p>
+        <p>2️⃣ The local LLM extracts transactions in the background; the file is deleted once its text is read</p>
+        <p>3️⃣ Every row is checked: valid dates, non-zero amounts, text that really appears in the statement, and balances that add up</p>
+        <p>4️⃣ You review, fix or drop rows, then commit. Nothing is saved before that</p>
+        <p>5️⃣ Rows already in the ledger are skipped, and categorization rules are applied</p>
     </div>
 </div>
 {% endblock %}

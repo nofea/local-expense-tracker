@@ -149,9 +149,10 @@ function renderTrendChart(containerId, data) {
  * Format a number as a currency string.
  */
 function formatCurrency(value) {
-    return new Intl.NumberFormat('en-IN', {
+    // Currency comes from [money] currency_code in config.toml via <body data-currency>.
+    return new Intl.NumberFormat(undefined, {
         style: 'currency',
-        currency: 'INR',
+        currency: document.body.dataset.currency || 'INR',
         minimumFractionDigits: 0,
         maximumFractionDigits: 0,
     }).format(value);

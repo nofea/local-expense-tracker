@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Imports — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Imports</h2>
+    <p>Every uploaded statement and where it is in review</p>
+</div>
+
+{% include "partials/imports_table.html" %}
+{% endblock %}

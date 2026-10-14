@@ -6,10 +6,10 @@
     <meta name="description" content="Privacy-first local expense tracker with LLM-powered statement parsing">
     <title>{% block title %}Expense Tracker{% endblock %}</title>
     <link rel="stylesheet" href="/static/style.css">
-    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <script src="/static/htmx.min.js" defer></script>
     <script src="/static/charts.js" defer></script>
 </head>
-<body>
+<body data-currency="{{ config.money.currency_code }}">
     <div class="app-shell">
         <!-- Sidebar Navigation -->
         <nav class="sidebar">
@@ -26,9 +26,17 @@
                 <span class="nav-icon">📄</span>
                 Upload Statements
             </a>
+            <a href="/imports" class="nav-link {% if request.url.path.startswith('/imports') %}active{% endif %}">
+                <span class="nav-icon">📥</span>
+                Imports
+            </a>
             <a href="/transactions" class="nav-link {% if request.url.path == '/transactions' %}active{% endif %}">
                 <span class="nav-icon">📋</span>
                 Transactions
+            </a>
+            <a href="/accounts" class="nav-link {% if request.url.path == '/accounts' %}active{% endif %}">
+                <span class="nav-icon">🏦</span>
+                Accounts
             </a>
             <a href="/rules" class="nav-link {% if request.url.path == '/rules' %}active{% endif %}">
                 <span class="nav-icon">🏷️</span>
@@ -42,6 +50,13 @@
 
         <!-- Main Content -->
         <main class="main-content">
+            {% if not config.llm_is_local %}
+            <div class="flash flash-warn" role="alert">
+                ⚠ <strong>Statement text is leaving this machine.</strong>
+                The LLM host is set to {{ config.llm.host }}, which is not local.
+                Change <code>[llm] host</code> in config.toml to keep everything local.
+            </div>
+            {% endif %}
             {% block content %}{% endblock %}
         </main>
     </div>

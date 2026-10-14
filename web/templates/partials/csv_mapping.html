@@ -1,0 +1,93 @@
+{# CSV with no saved mapping for this account (app_spec.md §3.2). The upload waits in
+   tmp/ (named by `token`) until the user saves a mapping, picks the LLM, or cancels. #}
+{% macro column_select(name, selected, optional=False) %}
+<select name="{{ name }}" id="map-{{ name }}">
+    {% if optional %}<option value="">— none —</option>{% else %}<option value="" disabled {{ 'selected' if not selected }}>Choose…</option>{% endif %}
+    {% for c in columns %}<option value="{{ c }}" {{ 'selected' if c == selected }}>{{ c }}</option>{% endfor %}
+</select>
+{% endmacro %}
+<div class="upload-result csv-mapping">
+    <h4>📑 How should {{ file_name }} be read?</h4>
+    <p class="muted-line">
+        There is no saved column mapping for this file layout in <strong>{{ account_name }}</strong>.
+        Map the columns once and later statements with the same header are read without the LLM.
+    </p>
+    {% if error %}<div class="flash flash-error" role="alert" style="margin-top: 0.75rem;">{{ error }}</div>{% endif %}
+
+    <form hx-post="/upload/csv-mapping" hx-target="#upload-result" hx-swap="innerHTML">
+        <input type="hidden" name="token" value="{{ token }}">
+        <input type="hidden" name="file_name" value="{{ file_name }}">
+        <input type="hidden" name="account_id" value="{{ account_id }}">
+        <input type="hidden" name="model" value="{{ model }}">
+
+        <div class="form-row mapping-row">
+            <div class="form-group" style="max-width: 170px;">
+                <label for="map-skip_rows">Header row</label>
+                <input type="number" id="map-skip_rows" name="skip_rows" min="0" value="{{ skip_rows }}"
+                       hx-post="/upload/csv-mapping" hx-vals='{"action": "refresh"}'
+                       hx-trigger="change" hx-target="#upload-result" hx-swap="innerHTML">
+                <span class="muted-line">lines to skip above it</span>
+            </div>
+        </div>
+
+        <div class="table-wrapper mapping-preview">
+            <table>
+                <thead><tr>{% for c in header %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+                <tbody>
+                    {% for r in samples %}<tr>{% for c in r %}<td>{{ c }}</td>{% endfor %}</tr>{% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="form-row mapping-row">
+            <div class="form-group">
+                <label for="map-date_col">Date column</label>
+                {{ column_select('date_col', values.date_col) }}
+            </div>
+            <div class="form-group">
+                <label for="map-date_format">Date format</label>
+                <select name="date_format" id="map-date_format">
+                    {% for fmt, example in date_formats.items() %}
+                    <option value="{{ fmt }}" {{ 'selected' if fmt == values.date_format }}>{{ example }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="map-value_date_col">Value date column</label>
+                {{ column_select('value_date_col', values.value_date_col, optional=True) }}
+            </div>
+            <div class="form-group">
+                <label for="map-description_col">Description column</label>
+                {{ column_select('description_col', values.description_col) }}
+            </div>
+        </div>
+
+        <fieldset class="mapping-amounts">
+            <legend>Amounts</legend>
+            <div class="form-row mapping-row">
+                <div class="form-group">
+                    <label class="radio-label"><input type="radio" name="amount_mode" value="single" {{ 'checked' if values.amount_mode != 'split' }}> One signed column</label>
+                    {{ column_select('amount_col', values.amount_col, optional=True) }}
+                </div>
+                <div class="form-group">
+                    <label class="radio-label"><input type="radio" name="amount_mode" value="split" {{ 'checked' if values.amount_mode == 'split' }}> Debit (money out)</label>
+                    {{ column_select('debit_col', values.debit_col, optional=True) }}
+                </div>
+                <div class="form-group">
+                    <label for="map-credit_col">Credit (money in)</label>
+                    {{ column_select('credit_col', values.credit_col, optional=True) }}
+                </div>
+            </div>
+            <label class="checkbox-label plain">
+                <input type="checkbox" name="negate" value="true" {{ 'checked' if values.negate }}>
+                Flip the sign: the file lists money out as positive (common in card statements)
+            </label>
+        </fieldset>
+
+        <div class="mapping-actions">
+            <button type="submit" name="action" value="save" class="btn btn-primary">Save mapping &amp; read file</button>
+            <button type="submit" name="action" value="llm" class="btn btn-ghost">Extract with LLM instead</button>
+            <button type="submit" name="action" value="cancel" class="btn btn-danger btn-sm" formnovalidate>Cancel</button>
+        </div>
+    </form>
+</div>

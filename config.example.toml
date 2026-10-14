@@ -1,0 +1,21 @@
+# Copy to config.toml and edit. Every key is optional; these are the defaults.
+# (app_spec.md §1.4)
+
+[llm]
+host = "http://localhost:11434"   # a non-local host sends statement text off this machine
+model = "llama3.1"                # default model in the upload form
+chunk_timeout_s = 120             # per-chunk LLM timeout; a timed-out chunk fails, the rest continue
+max_retries = 1                   # extra attempts when output doesn't match the schema
+
+[money]
+currency_code = "INR"             # ISO 4217, used by the charts
+currency_symbol = "₹"
+minor_units = 2                   # decimal places. Do NOT change once data exists:
+                                  # stored amounts and transaction ids depend on it.
+
+[storage]
+db_path = "data/expenses.db"      # relative to the repo root; EXPENSE_TRACKER_DB overrides
+
+[web]
+host = "127.0.0.1"                # a non-loopback host exposes your data to the network
+port = 8000

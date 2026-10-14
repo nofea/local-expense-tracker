@@ -28,10 +28,19 @@ def add_rule(
     category: str,
     cleaned_merchant: Optional[str] = None,
     db_path: Optional[str | Path] = None,
+    *,
+    priority: int = 0,
+    mark_transfer: bool = False,
+    account_id: Optional[int] = None,
 ) -> int:
     """Create or update a rule and immediately apply it."""
     rule = CategoryRule(
-        pattern=pattern, category=category, cleaned_merchant=cleaned_merchant
+        pattern=pattern,
+        category=category,
+        cleaned_merchant=cleaned_merchant,
+        priority=priority,
+        mark_transfer=mark_transfer,
+        account_id=account_id,
     )
     rule_id = db.upsert_rule(rule, db_path)
     db.apply_rules(db_path)
@@ -39,23 +48,15 @@ def add_rule(
 
 
 def remove_rule(rule_id: int, db_path: Optional[str | Path] = None) -> bool:
-    """Delete a rule by id."""
-    return db.delete_rule(rule_id, db_path)
+    """Delete a rule by id and re-run the engine, reverting rows it had set."""
+    removed = db.delete_rule(rule_id, db_path)
+    if removed:
+        db.apply_rules(db_path)
+    return removed
 
 
 def preview_rule_matches(
     pattern: str, db_path: Optional[str | Path] = None
 ) -> int:
     """Count how many existing transactions would match a given pattern."""
-    import sqlite3
-
-    path = db_path or db.DEFAULT_DB_PATH
-    conn = sqlite3.connect(str(path))
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM transactions WHERE raw_description LIKE ? COLLATE NOCASE",
-            (f"%{pattern}%",),
-        ).fetchone()
-        return row[0] if row else 0
-    finally:
-        conn.close()
+    return db.count_rule_matches(pattern, db_path=db_path)

@@ -1,0 +1,63 @@
+{# Imports list; re-rendered after a delete. #}
+<div id="imports-table">
+    {% if message %}<div class="flash flash-ok" role="status">{{ message }}</div>{% endif %}
+    {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+    <div class="card">
+        {% if imports %}
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>File</th>
+                        <th>Account</th>
+                        <th>Period</th>
+                        <th style="text-align:right;">Rows</th>
+                        <th>Reconciled</th>
+                        <th>Status</th>
+                        <th>Uploaded</th>
+                        <th><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for i in imports %}
+                    <tr>
+                        <td class="muted-line">{{ i.id }}</td>
+                        <td><a href="/imports/{{ i.id }}">{{ i.file_name }}</a></td>
+                        <td>{{ i.account_name }}</td>
+                        <td style="white-space:nowrap;">{{ i.period_start or '?' }} → {{ i.period_end or '?' }}</td>
+                        <td style="text-align:right;">{{ i.committed_count if i.status == 'committed' else i.staged_count }}</td>
+                        <td>
+                            {% if i.reconciled is none %}<span class="badge badge-muted">—</span>
+                            {% elif i.reconciled %}<span class="badge badge-ok">yes</span>
+                            {% else %}<span class="badge badge-error">mismatch</span>{% endif %}
+                        </td>
+                        <td><span class="badge badge-{{ {'review': 'warn', 'needs_password': 'warn', 'committed': 'ok', 'failed': 'error'}.get(i.status, 'muted') }}">{{ i.status | replace('_', ' ') }}</span></td>
+                        <td class="muted-line" style="white-space:nowrap;">{{ i.created_at }}</td>
+                        <td class="row-actions">
+                            {% if i.status == 'review' %}
+                            <a class="btn btn-ghost btn-sm" href="/imports/{{ i.id }}">Review</a>
+                            {% elif i.status == 'needs_password' %}
+                            <a class="btn btn-ghost btn-sm" href="/imports/{{ i.id }}">Enter password</a>
+                            {% elif i.status in ('committed', 'failed', 'discarded') %}
+                            <button class="btn btn-danger btn-sm"
+                                    hx-delete="/imports/{{ i.id }}" hx-target="#imports-table" hx-swap="outerHTML"
+                                    hx-confirm="{% if i.status == 'committed' %}Delete import #{{ i.id }} ({{ i.file_name }}) and its {{ i.committed_count }} transaction(s)? Your manual edits to them are lost. You can upload the file again afterwards.{% else %}Remove import #{{ i.id }} from this list?{% endif %}">
+                                {{ 'Delete import' if i.status == 'committed' else 'Remove' }}
+                            </button>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-icon">📥</div>
+            <h3>No imports yet</h3>
+            <p><a href="/upload">Upload a statement</a> to get started.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>

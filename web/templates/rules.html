@@ -12,25 +12,60 @@
     <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 1rem;">
         Add New Rule
     </h3>
-    <form class="form-row"
+    <form id="rule-form"
           hx-post="/rules"
           hx-target="#rules-table-body"
           hx-swap="innerHTML"
-          hx-on::after-request="this.reset()">
-        <div class="form-group">
-            <label>Pattern (keyword)</label>
-            <input type="text" name="pattern" placeholder="e.g. AMZN, SWIGGY" required>
+          hx-on::after-request="if (event.detail.successful) { this.reset(); document.getElementById('rule-match-count').textContent = ''; }">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="rule-pattern">Pattern (keyword)</label>
+                <input type="text" id="rule-pattern" name="pattern" placeholder="e.g. AMZN, SWIGGY" value="{{ prefill.pattern }}" required
+                       hx-get="/rules/match-count" hx-include="#rule-form [name='account_id']"
+                       hx-trigger="input changed delay:300ms" hx-target="#rule-match-count" hx-swap="innerHTML">
+            </div>
+            <div class="form-group">
+                <label for="rule-category">Category</label>
+                <input type="text" id="rule-category" name="category" placeholder="e.g. Shopping, Food" value="{{ prefill.category if prefill.category != 'Uncategorized' else '' }}" required>
+            </div>
+            <div class="form-group">
+                <label for="rule-merchant">Merchant Name (optional)</label>
+                <input type="text" id="rule-merchant" name="cleaned_merchant" placeholder="e.g. Amazon, Swiggy" value="{{ prefill.cleaned_merchant }}">
+            </div>
         </div>
-        <div class="form-group">
-            <label>Category</label>
-            <input type="text" name="category" placeholder="e.g. Shopping, Food" required>
+        <div class="form-row" style="margin-top: 1rem;">
+            <div class="form-group" style="max-width: 120px;">
+                <label for="rule-priority">Priority</label>
+                <input type="number" id="rule-priority" name="priority" value="0" step="1">
+            </div>
+            <div class="form-group" style="max-width: 220px;">
+                <label for="rule-account">Applies to</label>
+                <select id="rule-account" name="account_id"
+                        hx-get="/rules/match-count" hx-include="#rule-pattern"
+                        hx-trigger="change" hx-target="#rule-match-count" hx-swap="innerHTML">
+                    <option value="">All accounts</option>
+                    {% for a in accounts %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="checkbox-label plain">
+                    <input type="checkbox" name="mark_transfer" value="true">
+                    Mark matches as transfers (e.g. card payments)
+                </label>
+            </div>
+            <button type="submit" class="btn btn-primary">Save Rule</button>
         </div>
-        <div class="form-group">
-            <label>Merchant Name (optional)</label>
-            <input type="text" name="cleaned_merchant" placeholder="e.g. Amazon, Swiggy">
-        </div>
-        <button type="submit" class="btn btn-primary">Add Rule</button>
+        <p class="muted-line" style="margin-top: 0.75rem;">
+            <span id="rule-match-count" aria-live="polite">{% if match_count is not none %}Matches {{ match_count }} transaction{{ 's' if match_count != 1 }}{% endif %}</span>
+            · When several rules match, the highest priority wins. Saving an existing pattern updates that rule.
+        </p>
     </form>
+    {% if prefill.pattern %}
+    <p class="muted-line" style="margin-top:0.75rem;">
+        The pattern is prefilled with the full description. Shorten it to the part that
+        identifies the merchant (for example <code>SWIGGY</code>), or it will only match this exact text.
+    </p>
+    {% endif %}
 </div>
 
 <!-- Apply all rules -->
@@ -54,6 +89,9 @@
                     <th>Pattern</th>
                     <th>Category</th>
                     <th>Merchant Name</th>
+                    <th style="text-align: right;">Priority</th>
+                    <th>Applies to</th>
+                    <th>Transfer</th>
                     <th style="text-align: center;">Actions</th>
                 </tr>
             </thead>

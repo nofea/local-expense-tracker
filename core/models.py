@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from pydantic import BaseModel, Field, computed_field
+
+from core.config import get_config
 
 
 # ---------------------------------------------------------------------------
@@ -14,17 +16,27 @@ from pydantic import BaseModel, Field, computed_field
 # ---------------------------------------------------------------------------
 
 class TransactionRecord(BaseModel):
-    """A single transaction as stored in the database."""
+    """A single transaction as stored in the database (schema v2)."""
 
     id: str
+    account_id: int
+    statement_id: int
     transaction_date: str
     value_date: Optional[str] = None
     raw_description: str
     cleaned_merchant: Optional[str] = None
-    amount: float
+    amount_minor: int
+    is_transfer: bool = False
     category: str = "Uncategorized"
-    source_file: str = ""
-    injected_at: Optional[str] = None
+    category_source: str = "default"
+    rule_id: Optional[int] = None
+    created_at: Optional[str] = None
+    source_file: str = ""  # statements.file_name, joined in by queries
+
+    @property
+    def amount(self) -> float:
+        """Amount in major units, for display only — never sum this."""
+        return from_minor(self.amount_minor)
 
 
 class ExtractedTransaction(BaseModel):
@@ -59,6 +71,23 @@ class TransactionExtractionResult(BaseModel):
     transactions: list[ExtractedTransaction]
 
 
+class StatementMetadata(BaseModel):
+    """Statement-level facts asked of the first and last chunks (§3.3)."""
+
+    period_start: Optional[str] = Field(
+        None, description="First day of the statement period, YYYY-MM-DD, or null"
+    )
+    period_end: Optional[str] = Field(
+        None, description="Last day of the statement period, YYYY-MM-DD, or null"
+    )
+    opening_balance: Optional[float] = Field(
+        None, description="Opening/previous balance as printed, or null if not shown"
+    )
+    closing_balance: Optional[float] = Field(
+        None, description="Closing/current balance as printed, or null if not shown"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Categorization rule
 # ---------------------------------------------------------------------------
@@ -75,6 +104,13 @@ class CategoryRule(BaseModel):
     )
     cleaned_merchant: Optional[str] = Field(
         None, description="Optional normalized merchant name"
+    )
+    mark_transfer: bool = Field(
+        False, description="Matching rows are flagged as transfers"
+    )
+    priority: int = Field(0, description="Higher wins when several rules match")
+    account_id: Optional[int] = Field(
+        None, description="Restrict the rule to one account (None = all)"
     )
 
 
@@ -102,23 +138,91 @@ class MonthlyTrend(BaseModel):
     expense: float
 
 
-class IngestionSummary(BaseModel):
-    """Result of processing a single uploaded file."""
-
-    source_file: str
-    total_extracted: int = 0
-    new_inserted: int = 0
-    duplicates_skipped: int = 0
-    errors: list[str] = Field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def compute_transaction_id(
-    transaction_date: str, raw_description: str, amount: float
+# Decimal places of the currency (2: paise per rupee), from config.toml.
+# Fixed for the life of a database: amount_minor and transaction ids use it.
+MINOR_UNITS = get_config().money.minor_units
+
+
+def to_minor(amount: float | str | Decimal) -> int:
+    """Convert a major-unit amount to integer minor units, rounding half up.
+
+    Floats go through ``str`` first so that e.g. ``0.1`` is treated as the
+    decimal 0.1 rather than its binary approximation.
+    """
+    value = amount if isinstance(amount, Decimal) else Decimal(str(amount))
+    return int((value * 10**MINOR_UNITS).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def from_minor(amount_minor: int) -> float:
+    """Convert integer minor units to a major-unit float for display."""
+    return amount_minor / 10**MINOR_UNITS
+
+
+def minor_to_input(amount_minor: Optional[int]) -> str:
+    """Minor units as a plain editable number, e.g. ``-1234.50``."""
+    return "" if amount_minor is None else f"{from_minor(amount_minor):.{MINOR_UNITS}f}"
+
+
+def format_money(
+    amount: Optional[float | int],
+    *,
+    minor: bool = False,
+    signed: bool = False,
+    decimals: Optional[int] = None,
 ) -> str:
-    """Deterministic SHA-256 hash for deduplication."""
-    payload = f"{transaction_date}|{raw_description}|{amount:.2f}"
+    """Format an amount with the configured currency symbol, e.g. ``₹1,234.50``.
+
+    *amount* is in major units, or in minor units when *minor* is set.
+    *signed* prefixes ``+`` for positive values; negatives always get ``−``.
+    *decimals* defaults to the currency's ``minor_units``.
+    """
+    if amount is None:
+        return "—"
+    value = from_minor(amount) if minor else amount
+    places = MINOR_UNITS if decimals is None else decimals
+    sign = "−" if value < 0 else ("+" if signed and value > 0 else "")
+    return f"{sign}{get_config().money.currency_symbol}{abs(value):,.{places}f}"
+
+
+def normalize_description(raw_description: str) -> str:
+    """Collapse runs of whitespace and trim; case is preserved (§5)."""
+    return " ".join(raw_description.split())
+
+
+def compute_transaction_id(
+    account_id: int,
+    transaction_date: str,
+    raw_description: str,
+    amount_minor: int,
+    ordinal: int,
+) -> str:
+    """Deterministic SHA-256 transaction id (app_spec.md §5).
+
+    *ordinal* is the row's 0-based index among rows in the same statement
+    with identical (date, normalized description, amount).  This formula is
+    part of the data contract: changing it needs a migration that
+    recomputes every id.
+    """
+    payload = (
+        f"{account_id}|{transaction_date}|{normalize_description(raw_description)}"
+        f"|{amount_minor}|{ordinal}"
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def assign_ordinals(keys: list[tuple]) -> list[int]:
+    """Return the §5 ordinal for each key, in order.
+
+    The ordinal counts earlier occurrences of the same key, so ``[a, b, a]``
+    gives ``[0, 0, 1]``.
+    """
+    seen: dict[tuple, int] = {}
+    ordinals: list[int] = []
+    for key in keys:
+        ordinals.append(seen.get(key, 0))
+        seen[key] = ordinals[-1] + 1
+    return ordinals

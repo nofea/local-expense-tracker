@@ -1,0 +1,104 @@
+{# Accounts and saved CSV mappings; re-rendered after every change. #}
+<div id="accounts-table">
+    {% if message %}<div class="flash flash-ok" role="status">{{ message }}</div>{% endif %}
+    {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+    <div class="card" style="margin-bottom: 1.5rem;">
+        {% if accounts %}
+        <div class="table-wrapper">
+            <table class="review-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Institution</th>
+                        <th style="text-align:right;">Imports</th>
+                        <th style="text-align:right;">Transactions</th>
+                        <th><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for a in accounts %}
+                    <tr>
+                        <td><input type="text" name="name" value="{{ a.name }}" class="cell-input" aria-label="Name of {{ a.name }}"></td>
+                        <td>
+                            <select name="kind" class="cell-input" aria-label="Type of {{ a.name }}">
+                                {% for k in account_kinds %}<option value="{{ k }}" {{ 'selected' if k == a.kind }}>{{ k | replace('_', ' ') }}</option>{% endfor %}
+                            </select>
+                        </td>
+                        <td><input type="text" name="institution" value="{{ a.institution or '' }}" class="cell-input" aria-label="Institution of {{ a.name }}"></td>
+                        <td style="text-align:right;">{{ a.statement_count }}</td>
+                        <td style="text-align:right;">
+                            {% if a.transaction_count %}<a href="/transactions?account_id={{ a.id }}">{{ a.transaction_count }}</a>{% else %}0{% endif %}
+                        </td>
+                        <td class="row-actions" style="white-space:nowrap;">
+                            <button class="btn btn-ghost btn-sm"
+                                    hx-post="/accounts/{{ a.id }}" hx-include="closest tr"
+                                    hx-target="#accounts-table" hx-swap="outerHTML">Save</button>
+                            {% if a.statement_count == 0 %}
+                            <button class="btn btn-danger btn-sm"
+                                    hx-delete="/accounts/{{ a.id }}" hx-target="#accounts-table" hx-swap="outerHTML"
+                                    hx-confirm="Delete the account '{{ a.name }}'?">Delete</button>
+                            {% else %}
+                            <span class="muted-line" title="Delete its imports first">in use</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-icon">🏦</div>
+            <h3>No accounts yet</h3>
+            <p>Add one above, or upload a statement and it is filed under "Default".</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.5rem;">
+            Saved CSV mappings
+        </h3>
+        <p class="muted-line" style="margin-bottom: 1rem;">
+            A CSV whose header matches one of these is read without the LLM. Delete a mapping to be asked again.
+        </p>
+        {% if mappings %}
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Account</th>
+                        <th>Date</th>
+                        <th>Description</th>
+                        <th>Amount</th>
+                        <th>Header row</th>
+                        <th><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for m, account_name in mappings %}
+                    <tr>
+                        <td>{{ account_name }}</td>
+                        <td>{{ m.date_col }} <span class="muted-line">({{ date_formats.get(m.date_format, m.date_format) }})</span></td>
+                        <td>{{ m.description_col }}</td>
+                        <td>
+                            {% if m.amount_col %}{{ m.amount_col }}{% else %}{{ m.credit_col }} − {{ m.debit_col }}{% endif %}
+                            {% if m.negate %}<span class="badge badge-muted">sign flipped</span>{% endif %}
+                        </td>
+                        <td>{{ m.skip_rows + 1 }}</td>
+                        <td>
+                            <button class="btn btn-danger btn-sm"
+                                    hx-delete="/csv-mappings/{{ m.id }}" hx-target="#accounts-table" hx-swap="outerHTML"
+                                    hx-confirm="Delete this CSV mapping?">Delete</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted-line">None yet. You are asked for one the first time you upload a CSV.</p>
+        {% endif %}
+    </div>
+</div>
