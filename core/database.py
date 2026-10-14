@@ -13,6 +13,7 @@ from typing import Optional
 
 from core import migrations
 from core.config import get_config
+from core.csv_import import CsvMapping
 from core.models import (
     CategoryRule,
     TransactionRecord,
@@ -84,6 +85,187 @@ def list_accounts(db_path: Optional[str | Path] = None) -> list[sqlite3.Row]:
     conn = connect(db_path)
     try:
         return conn.execute("SELECT * FROM accounts ORDER BY name").fetchall()
+    finally:
+        conn.close()
+
+
+ACCOUNT_KINDS = ("bank", "credit_card")
+
+
+class AccountError(ValueError):
+    """An account change was refused; the message is shown to the user."""
+
+
+def _account_fields(name: str, kind: str, institution: Optional[str]) -> tuple[str, str, Optional[str]]:
+    name = " ".join(name.split())
+    if not name:
+        raise AccountError("The account needs a name.")
+    if kind not in ACCOUNT_KINDS:
+        raise AccountError("The account type must be bank or credit card.")
+    return name, kind, " ".join((institution or "").split()) or None
+
+
+def create_account(
+    name: str,
+    kind: str = "bank",
+    institution: Optional[str] = None,
+    db_path: Optional[str | Path] = None,
+) -> int:
+    """Create an account; raises :class:`AccountError` on a bad or taken name."""
+    fields = _account_fields(name, kind, institution)
+    conn = connect(db_path)
+    try:
+        account_id = conn.execute(
+            "INSERT INTO accounts (name, kind, institution) VALUES (?, ?, ?)", fields
+        ).lastrowid
+        conn.commit()
+        return account_id
+    except sqlite3.IntegrityError:
+        raise AccountError(f"An account named '{fields[0]}' already exists.") from None
+    finally:
+        conn.close()
+
+
+def update_account(
+    account_id: int,
+    *,
+    name: str,
+    kind: str,
+    institution: Optional[str] = None,
+    db_path: Optional[str | Path] = None,
+) -> None:
+    fields = _account_fields(name, kind, institution)
+    conn = connect(db_path)
+    try:
+        cur = conn.execute(
+            "UPDATE accounts SET name = ?, kind = ?, institution = ? WHERE id = ?",
+            (*fields, account_id),
+        )
+        if cur.rowcount == 0:
+            raise AccountError("Account not found.")
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise AccountError(f"An account named '{fields[0]}' already exists.") from None
+    finally:
+        conn.close()
+
+
+def delete_account(account_id: int, db_path: Optional[str | Path] = None) -> None:
+    """Delete an account that has no statements (§7.1).
+
+    Its CSV mappings go with it.  Rules scoped to it must be deleted first,
+    since turning them into all-account rules would change other rows.
+    """
+    conn = connect(db_path)
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            statements = conn.execute(
+                "SELECT COUNT(*) FROM statements WHERE account_id = ?", (account_id,)
+            ).fetchone()[0]
+            if statements:
+                raise AccountError(
+                    f"This account has {statements} import(s). Delete them on the Imports page first."
+                )
+            rules = conn.execute(
+                "SELECT COUNT(*) FROM category_rules WHERE account_id = ?", (account_id,)
+            ).fetchone()[0]
+            if rules:
+                raise AccountError(f"{rules} rule(s) apply only to this account. Delete them first.")
+            conn.execute("DELETE FROM csv_mappings WHERE account_id = ?", (account_id,))
+            if conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,)).rowcount == 0:
+                raise AccountError("Account not found.")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def list_accounts_summary(db_path: Optional[str | Path] = None) -> list[dict]:
+    """Accounts with their import, transaction and scoped-rule counts."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT a.*,
+                   (SELECT COUNT(*) FROM statements s WHERE s.account_id = a.id) AS statement_count,
+                   (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id) AS transaction_count,
+                   (SELECT COUNT(*) FROM category_rules r WHERE r.account_id = a.id) AS rule_count
+            FROM accounts a ORDER BY a.name
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CSV mappings (§3.2)
+# ---------------------------------------------------------------------------
+
+def get_csv_mappings(
+    account_id: Optional[int] = None, db_path: Optional[str | Path] = None
+) -> list[CsvMapping]:
+    """Saved mappings, for one account or all of them."""
+    conn = connect(db_path)
+    try:
+        sql = "SELECT * FROM csv_mappings"
+        params: tuple = ()
+        if account_id is not None:
+            sql += " WHERE account_id = ?"
+            params = (account_id,)
+        return [CsvMapping.from_row(r) for r in conn.execute(sql + " ORDER BY id", params)]
+    finally:
+        conn.close()
+
+
+def save_csv_mapping(
+    account_id: int, mapping: CsvMapping, db_path: Optional[str | Path] = None
+) -> int:
+    """Insert or replace the account's mapping for this header. Returns its id."""
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO csv_mappings
+                (account_id, header_signature, skip_rows, date_col, date_format,
+                 value_date_col, description_col, amount_col, debit_col, credit_col, negate)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, header_signature) DO UPDATE SET
+                skip_rows = excluded.skip_rows,
+                date_col = excluded.date_col,
+                date_format = excluded.date_format,
+                value_date_col = excluded.value_date_col,
+                description_col = excluded.description_col,
+                amount_col = excluded.amount_col,
+                debit_col = excluded.debit_col,
+                credit_col = excluded.credit_col,
+                negate = excluded.negate
+            """,
+            (
+                account_id, mapping.header_signature, mapping.skip_rows, mapping.date_col,
+                mapping.date_format, mapping.value_date_col, mapping.description_col,
+                mapping.amount_col, mapping.debit_col, mapping.credit_col, int(mapping.negate),
+            ),
+        )
+        conn.commit()
+        return conn.execute(
+            "SELECT id FROM csv_mappings WHERE account_id = ? AND header_signature = ?",
+            (account_id, mapping.header_signature),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def delete_csv_mapping(mapping_id: int, db_path: Optional[str | Path] = None) -> bool:
+    conn = connect(db_path)
+    try:
+        cur = conn.execute("DELETE FROM csv_mappings WHERE id = ?", (mapping_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

@@ -22,6 +22,38 @@
             <input type="file" name="file" accept=".pdf,.csv" required>
         </div>
 
+        <!-- Account (§3.1) and PDF password (§3.2) -->
+        <div class="form-row upload-options">
+            <div class="form-group">
+                <label for="account-select">Account</label>
+                <select name="account_id" id="account-select">
+                    {% for a in accounts %}
+                    <option value="{{ a.id }}">{{ a.name }}{% if a.kind == 'credit_card' %} (card){% endif %}</option>
+                    {% else %}
+                    <option value="">Default</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="new-account-name">…or a new account</label>
+                <input type="text" id="new-account-name" name="new_account_name" placeholder="e.g. HDFC Savings" autocomplete="off">
+            </div>
+            <div class="form-group" style="max-width: 160px;">
+                <label for="new-account-kind">New account type</label>
+                <select name="new_account_kind" id="new-account-kind">
+                    {% for k in account_kinds %}<option value="{{ k }}">{{ k | replace('_', ' ') }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="pdf-password">PDF password (optional)</label>
+                <input type="password" id="pdf-password" name="password" autocomplete="off"
+                       placeholder="Only for locked PDFs">
+            </div>
+        </div>
+        <p class="muted-line" style="margin-top: 0.5rem;">
+            Transactions are filed under this account. The password is used once to open the file and is never saved.
+        </p>
+
         <!-- Model selector -->
         <div class="model-selector">
             <label for="model-select">🤖 LLM Model:</label>

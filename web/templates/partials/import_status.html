@@ -18,6 +18,21 @@
     </p>
     {% endif %}
 </div>
+{% elif s.status == 'needs_password' %}
+<div class="upload-result import-progress">
+    <h4>🔒 {{ s.file_name }} needs a password</h4>
+    <p class="muted-line">{{ s.error or 'This PDF is password-protected.' }} The password is used once and never saved.</p>
+    <form class="form-row" style="margin-top: 0.75rem;"
+          hx-post="/imports/{{ s.id }}/password" hx-target="closest .upload-result" hx-swap="outerHTML">
+        <div class="form-group" style="max-width: 280px;">
+            <label for="password-{{ s.id }}">PDF password</label>
+            <input type="password" id="password-{{ s.id }}" name="password" autocomplete="off" required autofocus>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Unlock</button>
+        <button type="button" class="btn btn-ghost btn-sm"
+                hx-post="/imports/{{ s.id }}/cancel" hx-target="closest .upload-result" hx-swap="outerHTML">Cancel import</button>
+    </form>
+</div>
 {% elif s.status == 'review' %}
 <div class="upload-result success">
     <h4>✅ {{ s.file_name }} is ready for review</h4>

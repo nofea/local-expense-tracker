@@ -102,8 +102,9 @@ class TestWebOllamaStatusRendering(unittest.TestCase):
         self.assertNotIn("status-dot offline", res.text)
         self.assertNotIn("Ollama Offline", res.text)
 
+    @patch("web.app.list_available_models", return_value=[])
     @patch("web.app.is_ollama_available", return_value=False)
-    def test_upload_page_shows_ollama_offline_and_warning(self, mock_avail):
+    def test_upload_page_shows_ollama_offline_and_warning(self, mock_avail, _models):
         res = self.client.get("/upload")
         self.assertEqual(res.status_code, 200)
         self.assertIn("status-dot offline", res.text)
@@ -142,7 +143,7 @@ class TestWebOllamaStatusRendering(unittest.TestCase):
     def test_upload_file_fails_fast_when_offline(self, mock_avail):
         res = self.client.post(
             "/upload",
-            files={"file": ("stmt.csv", b"Date,Description,Amount\n2024-01-01,Store,-10.00", "text/csv")},
+            files={"file": ("stmt.pdf", b"%PDF-1.4", "application/pdf")},
             data={"model": "llama3.1"},
         )
         self.assertEqual(res.status_code, 200)

@@ -34,6 +34,10 @@
                 <span class="nav-icon">📋</span>
                 Transactions
             </a>
+            <a href="/accounts" class="nav-link {% if request.url.path == '/accounts' %}active{% endif %}">
+                <span class="nav-icon">🏦</span>
+                Accounts
+            </a>
             <a href="/rules" class="nav-link {% if request.url.path == '/rules' %}active{% endif %}">
                 <span class="nav-icon">🏷️</span>
                 Category Rules

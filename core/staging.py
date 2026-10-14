@@ -70,31 +70,53 @@ def create_import(
     file_name: str,
     file_sha256: str,
     model: Optional[str],
+    extractor: str = "llm",
     db_path: Optional[str | Path] = None,
 ) -> int:
     """Create a ``queued`` statement for a new upload (§3.1 steps 3–4).
 
     Raises :class:`AlreadyImported` if the account already has this file in
     progress, in review or committed.  A previous failed or discarded
-    attempt is replaced.
+    attempt is replaced.  *extractor* is ``llm`` or ``csv_mapping``.
     """
     with _write_tx(db_path) as conn:
-        existing = conn.execute(
-            "SELECT * FROM statements WHERE account_id = ? AND file_sha256 = ?",
-            (account_id, file_sha256),
-        ).fetchone()
+        existing = _existing_import(conn, account_id, file_sha256)
         if existing is not None:
-            if existing["status"] in _ACTIVE:
-                raise AlreadyImported(existing)
             conn.execute("DELETE FROM statements WHERE id = ?", (existing["id"],))
         return conn.execute(
             """
             INSERT INTO statements
                 (account_id, file_name, file_sha256, extractor, model, status)
-            VALUES (?, ?, ?, 'llm', ?, 'queued')
+            VALUES (?, ?, ?, ?, ?, 'queued')
             """,
-            (account_id, file_name, file_sha256, model),
+            (account_id, file_name, file_sha256, extractor, model if extractor == "llm" else None),
         ).lastrowid
+
+
+def check_not_imported(
+    account_id: int, file_sha256: str, db_path: Optional[str | Path] = None
+) -> None:
+    """Raise :class:`AlreadyImported` early, before the user maps a CSV.
+    :func:`create_import` checks again."""
+    conn = connect(db_path)
+    try:
+        _existing_import(conn, account_id, file_sha256)
+    finally:
+        conn.close()
+
+
+def _existing_import(
+    conn: sqlite3.Connection, account_id: int, file_sha256: str
+) -> Optional[sqlite3.Row]:
+    """The account's earlier statement for these bytes, if it may be
+    replaced; raises :class:`AlreadyImported` if it may not."""
+    existing = conn.execute(
+        "SELECT * FROM statements WHERE account_id = ? AND file_sha256 = ?",
+        (account_id, file_sha256),
+    ).fetchone()
+    if existing is not None and existing["status"] in _ACTIVE:
+        raise AlreadyImported(existing)
+    return existing
 
 
 def get_statement(statement_id: int, db_path: Optional[str | Path] = None) -> Optional[sqlite3.Row]:
@@ -153,6 +175,22 @@ def set_progress(
             (done, total, statement_id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def requeue(statement_id: int, db_path: Optional[str | Path] = None) -> bool:
+    """Move a ``needs_password`` job back to ``queued`` (§3.2).  Returns
+    False if it is no longer waiting for a password."""
+    conn = connect(db_path)
+    try:
+        cur = conn.execute(
+            "UPDATE statements SET status = 'queued', error = NULL "
+            "WHERE id = ? AND status = 'needs_password'",
+            (statement_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

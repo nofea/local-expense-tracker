@@ -32,11 +32,13 @@
                             {% elif i.reconciled %}<span class="badge badge-ok">yes</span>
                             {% else %}<span class="badge badge-error">mismatch</span>{% endif %}
                         </td>
-                        <td><span class="badge badge-{{ {'review': 'warn', 'committed': 'ok', 'failed': 'error'}.get(i.status, 'muted') }}">{{ i.status }}</span></td>
+                        <td><span class="badge badge-{{ {'review': 'warn', 'needs_password': 'warn', 'committed': 'ok', 'failed': 'error'}.get(i.status, 'muted') }}">{{ i.status | replace('_', ' ') }}</span></td>
                         <td class="muted-line" style="white-space:nowrap;">{{ i.created_at }}</td>
                         <td class="row-actions">
                             {% if i.status == 'review' %}
                             <a class="btn btn-ghost btn-sm" href="/imports/{{ i.id }}">Review</a>
+                            {% elif i.status == 'needs_password' %}
+                            <a class="btn btn-ghost btn-sm" href="/imports/{{ i.id }}">Enter password</a>
                             {% elif i.status in ('committed', 'failed', 'discarded') %}
                             <button class="btn btn-danger btn-sm"
                                     hx-delete="/imports/{{ i.id }}" hx-target="#imports-table" hx-swap="outerHTML"

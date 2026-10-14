@@ -354,7 +354,12 @@ class TestWebReviewFlow(unittest.TestCase):
         self.csv = f"Date,Description,Amount\n# {uuid.uuid4()}\n".encode()
 
     def upload(self):
+        """Upload the CSV and, at the mapping form (§3.2), choose the LLM."""
         res = self.client.post("/upload", files={"file": ("mar.csv", self.csv, "text/csv")})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("Extract with LLM instead", res.text)
+        form = dict(re.findall(r'<input type="hidden" name="(\w+)" value="([^"]*)">', res.text))
+        res = self.client.post("/upload/csv-mapping", data={**form, "action": "llm"})
         self.assertEqual(res.status_code, 200)
         jobs.wait_idle()
         return int(re.search(r"/imports/(\d+)/status", res.text).group(1))

@@ -8,6 +8,11 @@ Uploaded files wait in a private ``tmp/`` directory next to the database
 and are deleted as soon as their text has been extracted (§3.2, §9.3).
 :func:`start` wipes that directory and marks jobs that were running when
 the server stopped as failed.
+
+A CSV job with a saved mapping is parsed deterministically, with no LLM
+call.  A PDF that needs a password parks its job in ``needs_password``: the
+job (and its file) is held in memory until :func:`provide_password` or
+:func:`cancel`.  Passwords live only in the job object, never on disk.
 """
 
 from __future__ import annotations
@@ -16,12 +21,13 @@ import logging
 import queue
 import shutil
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from core import database, staging
-from core.ingestion import ExtractionError, extract_statement, read_pages
+from core import csv_import, database, staging, validator
+from core.csv_import import CsvMapping
+from core.ingestion import ExtractionError, PasswordRequired, extract_statement, read_pages
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +39,17 @@ class Job:
     source_name: str
     model: str
     db_path: Optional[Path] = None
+    mapping: Optional[CsvMapping] = None  # set: parse the CSV without the LLM
+    password: Optional[str] = field(default=None, repr=False)
 
 
 _queue: "queue.Queue[Job]" = queue.Queue()
 _worker: Optional[threading.Thread] = None
 _worker_lock = threading.Lock()
+
+# Jobs waiting in needs_password, by statement id.
+_held: dict[int, Job] = {}
+_held_lock = threading.Lock()
 
 
 def tmp_dir(db_path: Optional[str | Path] = None) -> Path:
@@ -66,6 +78,33 @@ def submit(job: Job) -> None:
     _queue.put(job)
 
 
+def provide_password(statement_id: int, password: str) -> bool:
+    """Retry a ``needs_password`` job with *password*.  Returns False if the
+    job is not waiting (e.g. the server restarted, which wipes its file)."""
+    with _held_lock:
+        job = _held.pop(statement_id, None)
+    if job is None:
+        return False
+    if not staging.requeue(statement_id, job.db_path):
+        job.file_path.unlink(missing_ok=True)
+        return False
+    job.password = password
+    submit(job)
+    return True
+
+
+def cancel(statement_id: int, db_path: Optional[str | Path] = None) -> bool:
+    """Give up on a ``needs_password`` job: delete its file and mark it
+    ``discarded``."""
+    with _held_lock:
+        job = _held.pop(statement_id, None)
+    if job is None:
+        return False
+    job.file_path.unlink(missing_ok=True)
+    staging.set_status(statement_id, "discarded", db_path=job.db_path or db_path)
+    return True
+
+
 def wait_idle() -> None:
     """Block until every submitted job has finished (used by tests)."""
     _queue.join()
@@ -91,16 +130,34 @@ def _work() -> None:
 
 
 def run_job(job: Job) -> None:
-    """Extract, stage and validate one upload, ending in ``review`` or
-    ``failed``.  The uploaded file is always deleted."""
+    """Extract, stage and validate one upload, ending in ``review``,
+    ``failed`` or ``needs_password``.  The uploaded file is deleted unless
+    the job is held for a password."""
     db_path = job.db_path
     staging.set_status(job.statement_id, "extracting", db_path=db_path)
+    held = False
     try:
+        if job.mapping is not None:
+            try:
+                rows = csv_import.parse_file(job.file_path, job.mapping)
+            finally:
+                job.file_path.unlink(missing_ok=True)  # §3.2
+            _stage_mapped_csv(job, rows)
+            return
+
         try:
-            pages, header = read_pages(job.file_path, job.source_name)
+            pages, header = read_pages(job.file_path, job.source_name, job.password)
+        except PasswordRequired as exc:
+            job.password = None
+            with _held_lock:
+                _held[job.statement_id] = job
+            held = True
+            staging.set_status(job.statement_id, "needs_password", error=str(exc), db_path=db_path)
+            return
         finally:
             # Original statements are never retained (§3.2).
-            job.file_path.unlink(missing_ok=True)
+            if not held:
+                job.file_path.unlink(missing_ok=True)
 
         extraction = extract_statement(
             pages,
@@ -133,4 +190,27 @@ def run_job(job: Job) -> None:
         log.exception("Import #%d failed", job.statement_id)
         staging.set_status(job.statement_id, "failed", error=str(exc) or type(exc).__name__, db_path=db_path)
     finally:
-        job.file_path.unlink(missing_ok=True)
+        if not held:
+            job.file_path.unlink(missing_ok=True)
+
+
+def _stage_mapped_csv(job: Job, rows: list[dict]) -> None:
+    """Stage rows parsed with a saved mapping.  Their text comes straight
+    from the file, so there is no ``not_in_source`` check; the period is
+    taken from the dates, and the balances are left for the user."""
+    staging.set_progress(job.statement_id, 1, 1, job.db_path)
+    if not rows:
+        staging.set_status(
+            job.statement_id, "failed", error="No rows were found below the header.", db_path=job.db_path
+        )
+        return
+    dates = sorted(d for r in rows if validator.is_iso_date(d := r["transaction_date"]))
+    staging.stage_rows(
+        job.statement_id,
+        rows,
+        source_text="",
+        period_start=dates[0] if dates else None,
+        period_end=dates[-1] if dates else None,
+        db_path=job.db_path,
+    )
+    log.info("Import #%d ready for review (%d rows, CSV mapping)", job.statement_id, len(rows))

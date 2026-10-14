@@ -7,6 +7,9 @@ A fully local expense tracking application with LLM-powered bank statement parsi
 ## Features
 
 - **LLM-Powered Parsing** — Upload PDF/CSV bank statements and let a local LLM extract transactions automatically
+- **CSV Mappings** — Map a bank's CSV columns once; later statements with the same header are parsed without the LLM
+- **Password-Protected PDFs** — Enter the password at upload or when asked; it is never saved
+- **Accounts** — File statements under bank accounts and cards, and filter the dashboard and transactions by account
 - **Model Selection** — Choose which Ollama model to use for each processing job
 - **Deduplication** — SHA-256 hashing prevents double-counting from overlapping statements
 - **Category Rules** — Create keyword-based rules to auto-categorize transactions
@@ -63,8 +66,8 @@ Use `d` for Dashboard, `t` for Transactions, `q` to Quit.
 ## Usage
 
 1. **Start Ollama** — Make sure `ollama serve` is running
-2. **Upload a statement** — Go to the Upload page, select your model, drop a PDF/CSV
-3. **Review transactions** — Check the Transactions page for extracted data
+2. **Upload a statement** — Go to the Upload page, pick or create an account, select your model, drop a PDF/CSV. The first CSV of each layout asks you to map its columns (or to use the LLM instead)
+3. **Review and commit** — Check the extracted rows on the review screen, fix or drop any, then commit them to the ledger
 4. **Create rules** — Use the Rules page to map keywords to categories (e.g. `AMZN` → `Shopping`)
 5. **View insights** — The Dashboard shows monthly summaries, category breakdowns, and trends
 
@@ -78,6 +81,7 @@ expense_app/
 │   ├── database.py     # SQLite layer
 │   ├── models.py       # Pydantic models
 │   ├── ingestion.py    # PDF/CSV → LLM → DB pipeline
+│   ├── csv_import.py   # CSV column mappings (no LLM)
 │   ├── ollama_client.py# Ollama API integration
 │   ├── categorizer.py  # Category rules engine
 │   └── analytics.py    # Aggregation queries

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import tempfile
 import unicodedata
 from datetime import datetime
@@ -18,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from core import database as db
-from core import jobs, staging, validator
+from core import csv_import, jobs, staging, validator
 from core.analytics import (
     get_category_breakdown,
     get_monthly_summary,
@@ -143,13 +144,15 @@ async def dashboard(
     request: Request,
     year: Optional[int] = None,
     month: Optional[int] = None,
+    account_id: Optional[str] = None,
 ):
     y, m = _valid_month(year, month)
-    summary = get_monthly_summary(y, m)
-    breakdown = get_category_breakdown(y, m)
-    trend = get_monthly_trend(6)
-    uncategorized = get_uncategorized_count(y, m)
-    top_merchants = get_top_merchants(y, m)
+    account = _account_param(account_id)
+    summary = get_monthly_summary(y, m, account_id=account)
+    breakdown = get_category_breakdown(y, m, account_id=account)
+    trend = get_monthly_trend(6, account_id=account)
+    uncategorized = get_uncategorized_count(y, m, account_id=account)
+    top_merchants = get_top_merchants(y, m, account_id=account)
 
     return templates.TemplateResponse(
         request=request,
@@ -164,6 +167,8 @@ async def dashboard(
             "year": y,
             "month": m,
             "month_name": datetime(y, m, 1).strftime("%B %Y"),
+            "accounts": db.list_accounts(),
+            "account_id": account,
         },
     )
 
@@ -182,10 +187,55 @@ async def upload_page(request: Request):
         context={
             "request": request,
             "models": models,
+            "accounts": db.list_accounts(),
+            "account_kinds": db.ACCOUNT_KINDS,
             "ollama_available": ollama_ok,
             "ollama_status": ollama_ok,
         },
     )
+
+
+def _upload_failed(request: Request, message: str, existing_id: Optional[int] = None) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/upload_result.html",
+        context={"request": request, "error": message, "existing_id": existing_id},
+    )
+
+
+def _ollama_unreachable() -> str:
+    return (
+        f"Ollama is not running or unreachable at {get_config().llm.host}. "
+        "Please ensure Ollama is installed and running ('ollama serve') before processing."
+    )
+
+
+def _resolve_account(account_id: str, new_account_name: str, new_account_kind: str) -> int:
+    """The account picked on the upload form (§3.1 step 1): a new name wins,
+    then the selected id; with neither, the ``Default`` account."""
+    if new_account_name.strip():
+        name = " ".join(new_account_name.split())
+        existing = next((a for a in db.list_accounts() if a["name"] == name), None)
+        if existing is not None:
+            return existing["id"]
+        return db.create_account(name, new_account_kind)
+    if account_id.strip():
+        try:
+            wanted = int(account_id)
+        except ValueError:
+            wanted = None
+        if not any(a["id"] == wanted for a in db.list_accounts()):
+            raise db.AccountError("The selected account no longer exists.")
+        return wanted
+    return db.get_or_create_account()
+
+
+def _file_sha256(path: Path) -> str:
+    sha = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(1024 * 1024):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
 @app.post("/upload", response_class=HTMLResponse)
@@ -193,31 +243,27 @@ async def upload_file(
     request: Request,
     file: UploadFile = File(...),
     model: str = Form(""),
+    password: str = Form(""),
+    account_id: str = Form(""),
+    new_account_name: str = Form(""),
+    new_account_kind: str = Form("bank"),
 ):
     # The client filename is display text only — never a path (§3.1, §9.6).
     source_name = _sanitize_filename(file.filename)
     ext = Path(source_name).suffix.lower()
 
-    def failed(message: str) -> HTMLResponse:
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/upload_result.html",
-            context={"request": request, "error": message},
-        )
-
     if ext not in _ALLOWED_EXTENSIONS:
-        return failed(f"Unsupported file type '{ext or '(none)'}'. Upload a .pdf or .csv statement.")
-    if not is_ollama_available():
-        return failed(
-            f"Ollama is not running or unreachable at {get_config().llm.host}. "
-            "Please ensure Ollama is installed and running ('ollama serve') before processing."
-        )
+        return _upload_failed(request, f"Unsupported file type '{ext or '(none)'}'. Upload a .pdf or .csv statement.")
+    # A CSV may have a saved mapping and need no LLM; that is checked below.
+    if ext == ".pdf" and not is_ollama_available():
+        return _upload_failed(request, _ollama_unreachable())
     model = model.strip() or get_config().llm.model
 
     # Save under a generated name in the private job directory; the worker
     # deletes it as soon as the text is extracted (§3.2, §9.3).
     fd, tmp_name = tempfile.mkstemp(prefix="statement-", suffix=ext, dir=jobs.tmp_dir())
     tmp_path = Path(tmp_name)
+    mapping = None
     try:
         sha = hashlib.sha256()
         with os.fdopen(fd, "wb") as f:
@@ -229,27 +275,189 @@ async def upload_file(
                 sha.update(chunk)
                 f.write(chunk)
 
+        account = _resolve_account(account_id, new_account_name, new_account_kind)
+        if ext == ".csv":
+            rows = csv_import.read_rows(tmp_path)
+            mapping = csv_import.find_mapping(rows, db.get_csv_mappings(account))
+            if mapping is None:
+                # Ask how to read it; the file waits in tmp/ until then (§3.2).
+                staging.check_not_imported(account, sha.hexdigest())
+                return _mapping_form(
+                    request, token=tmp_path.name, file_name=source_name, account_id=account, model=model
+                )
+        if mapping is None and not is_ollama_available():
+            tmp_path.unlink(missing_ok=True)
+            return _upload_failed(request, _ollama_unreachable())
+
         statement_id = staging.create_import(
-            account_id=db.get_or_create_account(),
+            account_id=account,
             file_name=source_name,
             file_sha256=sha.hexdigest(),
             model=model,
+            extractor="llm" if mapping is None else "csv_mapping",
         )
     except _UploadTooLarge:
         tmp_path.unlink(missing_ok=True)
-        return failed(f"File is larger than the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
+        return _upload_failed(request, f"File is larger than the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
     except staging.AlreadyImported as exc:
         tmp_path.unlink(missing_ok=True)
-        return templates.TemplateResponse(
-            request=request,
-            name="partials/upload_result.html",
-            context={"request": request, "error": str(exc), "existing_id": exc.statement["id"]},
-        )
+        return _upload_failed(request, str(exc), exc.statement["id"])
+    except db.AccountError as exc:
+        tmp_path.unlink(missing_ok=True)
+        return _upload_failed(request, str(exc))
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
 
-    jobs.submit(jobs.Job(statement_id, tmp_path, source_name, model))
+    jobs.submit(jobs.Job(statement_id, tmp_path, source_name, model, mapping=mapping, password=password or None))
+    return _import_status(request, statement_id)
+
+
+# --- CSV mapping (§3.2) -----------------------------------------------------
+
+_HELD_CSV = re.compile(r"statement-[A-Za-z0-9_]+\.csv")
+
+
+def _held_csv(token: str) -> Optional[Path]:
+    """The temp file of a CSV awaiting a mapping decision.  *token* is the
+    generated file name and is checked so it can never name another path."""
+    if not _HELD_CSV.fullmatch(token):
+        return None
+    path = jobs.tmp_dir() / token
+    return path if path.is_file() else None
+
+
+def _mapping_form(
+    request: Request,
+    *,
+    token: str,
+    file_name: str,
+    account_id: int,
+    model: str,
+    skip_rows: Optional[int] = None,
+    values: Optional[dict] = None,
+    error: Optional[str] = None,
+) -> HTMLResponse:
+    rows = csv_import.read_rows(jobs.tmp_dir() / token)
+    if not rows:
+        (jobs.tmp_dir() / token).unlink(missing_ok=True)
+        return _upload_failed(request, "The file is empty.")
+    skip = csv_import.detect_header(rows) if skip_rows is None else min(max(skip_rows, 0), len(rows) - 1)
+    header = rows[skip]
+    samples = [r for r in rows[skip + 1 :] if any(r)][:5]
+    account = next((a for a in db.list_accounts() if a["id"] == account_id), None)
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/csv_mapping.html",
+        context={
+            "request": request,
+            "token": token,
+            "file_name": file_name,
+            "account_id": account_id,
+            "account_name": account["name"] if account else "",
+            "model": model,
+            "skip_rows": skip,
+            "header": header,
+            "columns": csv_import.columns(header),
+            "samples": samples,
+            "date_formats": csv_import.DATE_FORMATS,
+            "values": values or csv_import.guess_mapping(header, samples),
+            "error": error,
+        },
+    )
+
+
+@app.post("/upload/csv-mapping", response_class=HTMLResponse)
+async def csv_mapping_submit(
+    request: Request,
+    token: str = Form(...),
+    file_name: str = Form(""),
+    account_id: int = Form(...),
+    model: str = Form(""),
+    action: str = Form("save"),
+    skip_rows: int = Form(0),
+    date_col: str = Form(""),
+    date_format: str = Form(""),
+    value_date_col: str = Form(""),
+    description_col: str = Form(""),
+    amount_mode: str = Form("single"),
+    amount_col: str = Form(""),
+    debit_col: str = Form(""),
+    credit_col: str = Form(""),
+    negate: bool = Form(False),
+):
+    """The mapping form's actions: ``save`` a mapping and parse with it,
+    extract with the ``llm`` instead, ``refresh`` the form for another
+    header row, or ``cancel`` (the file is deleted)."""
+    path = _held_csv(token)
+    if path is None:
+        return _upload_failed(request, "This upload has expired. Please upload the file again.")
+    file_name = _sanitize_filename(file_name)
+    model = model.strip() or get_config().llm.model
+    form = dict(token=token, file_name=file_name, account_id=account_id, model=model)
+
+    if action == "cancel":
+        path.unlink(missing_ok=True)
+        return templates.TemplateResponse(
+            request=request,
+            name="partials/upload_result.html",
+            context={"request": request, "notice": f"Upload of {file_name} cancelled. The file was deleted."},
+        )
+    if action == "refresh":
+        return _mapping_form(request, **form, skip_rows=skip_rows)
+
+    values = {
+        "date_col": date_col or None,
+        "date_format": date_format,
+        "value_date_col": value_date_col or None,
+        "description_col": description_col or None,
+        "amount_mode": amount_mode,
+        "amount_col": (amount_col or None) if amount_mode == "single" else None,
+        "debit_col": (debit_col or None) if amount_mode == "split" else None,
+        "credit_col": (credit_col or None) if amount_mode == "split" else None,
+        "negate": negate,
+    }
+    mapping = None
+    if action == "llm":
+        if not is_ollama_available():
+            return _mapping_form(request, **form, skip_rows=skip_rows, values=values, error=_ollama_unreachable())
+    else:
+        rows = csv_import.read_rows(path)
+        header = rows[skip_rows] if 0 <= skip_rows < len(rows) else []
+        mapping = csv_import.CsvMapping(
+            header_signature=csv_import.header_signature(header),
+            skip_rows=skip_rows,
+            date_col=values["date_col"] or "",
+            date_format=date_format,
+            description_col=values["description_col"] or "",
+            value_date_col=values["value_date_col"],
+            amount_col=values["amount_col"],
+            debit_col=values["debit_col"],
+            credit_col=values["credit_col"],
+            negate=negate,
+        )
+        try:
+            csv_import.validate(rows, mapping)
+        except csv_import.CsvMappingError as exc:
+            return _mapping_form(request, **form, skip_rows=skip_rows, values=values, error=str(exc))
+        mapping.account_id = account_id
+        mapping.id = db.save_csv_mapping(account_id, mapping)
+
+    try:
+        statement_id = staging.create_import(
+            account_id=account_id,
+            file_name=file_name,
+            file_sha256=_file_sha256(path),
+            model=model,
+            extractor="llm" if mapping is None else "csv_mapping",
+        )
+    except staging.AlreadyImported as exc:
+        path.unlink(missing_ok=True)
+        return _upload_failed(request, str(exc), exc.statement["id"])
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    jobs.submit(jobs.Job(statement_id, path, file_name, model, mapping=mapping))
     return _import_status(request, statement_id)
 
 
@@ -292,6 +500,21 @@ async def delete_import_route(request: Request, statement_id: int):
 
 @app.get("/imports/{statement_id}/status", response_class=HTMLResponse)
 async def import_status(request: Request, statement_id: int):
+    return _import_status(request, statement_id)
+
+
+@app.post("/imports/{statement_id}/password", response_class=HTMLResponse)
+async def import_password(request: Request, statement_id: int, password: str = Form("")):
+    """Retry a ``needs_password`` PDF (§3.2).  The password stays in the
+    job's memory only."""
+    if password:
+        jobs.provide_password(statement_id, password)
+    return _import_status(request, statement_id)
+
+
+@app.post("/imports/{statement_id}/cancel", response_class=HTMLResponse)
+async def import_cancel(request: Request, statement_id: int):
+    jobs.cancel(statement_id)
     return _import_status(request, statement_id)
 
 
@@ -419,6 +642,7 @@ async def transactions_page(
     search: Optional[str] = None,
     uncategorized: bool = False,
     transfers: str = "show",
+    account_id: Optional[str] = None,
     page: int = 1,
 ):
     per_page = 30
@@ -431,7 +655,7 @@ async def transactions_page(
 
     filters = dict(
         year=year, month=month, category=category, search=search,
-        uncategorized=uncategorized, transfers=transfers,
+        uncategorized=uncategorized, transfers=transfers, account_id=_account_param(account_id),
     )
     txns = db.get_transactions(**filters, limit=per_page, offset=offset)
     total = db.get_transaction_count(**filters)
@@ -461,6 +685,8 @@ async def transactions_page(
             "filter_search": search or "",
             "filter_uncategorized": uncategorized,
             "filter_transfers": transfers,
+            "filter_account": filters["account_id"],
+            "accounts": db.list_accounts(),
             "filter_qs": filter_qs,
         },
     )
@@ -515,8 +741,113 @@ async def delete_transaction_route(tx_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Routes — Accounts (app_spec.md §7.1)
+# ---------------------------------------------------------------------------
+
+def _accounts_context(message: Optional[str] = None, error: Optional[str] = None) -> dict:
+    accounts = db.list_accounts_summary()
+    names = {a["id"]: a["name"] for a in accounts}
+    return {
+        "accounts": accounts,
+        "account_kinds": db.ACCOUNT_KINDS,
+        "mappings": [(m, names.get(m.account_id, "?")) for m in db.get_csv_mappings()],
+        "date_formats": csv_import.DATE_FORMATS,
+        "message": message,
+        "error": error,
+    }
+
+
+def _accounts_table(
+    request: Request, *, message: Optional[str] = None, error: Optional[str] = None
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/accounts_table.html",
+        context={"request": request, **_accounts_context(message, error)},
+    )
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="accounts.html",
+        context={"request": request, **_accounts_context()},
+    )
+
+
+@app.post("/accounts", response_class=HTMLResponse)
+async def create_account_route(
+    request: Request,
+    name: str = Form(""),
+    kind: str = Form("bank"),
+    institution: str = Form(""),
+):
+    try:
+        db.create_account(name, kind, institution)
+    except db.AccountError as exc:
+        return _accounts_table(request, error=str(exc))
+    return _accounts_table(request, message=f"Account '{' '.join(name.split())}' created.")
+
+
+@app.post("/accounts/{account_id}", response_class=HTMLResponse)
+async def update_account_route(
+    request: Request,
+    account_id: int,
+    name: str = Form(""),
+    kind: str = Form("bank"),
+    institution: str = Form(""),
+):
+    try:
+        db.update_account(account_id, name=name, kind=kind, institution=institution)
+    except db.AccountError as exc:
+        return _accounts_table(request, error=str(exc))
+    return _accounts_table(request, message="Account saved.")
+
+
+@app.delete("/accounts/{account_id}", response_class=HTMLResponse)
+async def delete_account_route(request: Request, account_id: int):
+    try:
+        db.delete_account(account_id)
+    except db.AccountError as exc:
+        return _accounts_table(request, error=str(exc))
+    return _accounts_table(request, message="Account deleted.")
+
+
+@app.delete("/csv-mappings/{mapping_id}", response_class=HTMLResponse)
+async def delete_csv_mapping_route(request: Request, mapping_id: int):
+    if not db.delete_csv_mapping(mapping_id):
+        return _accounts_table(request, error="Mapping not found.")
+    return _accounts_table(
+        request, message="Mapping deleted. The next file with that header will ask for a mapping again."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Routes — Rules
 # ---------------------------------------------------------------------------
+
+def _rules_fragment(request: Request, **extra) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/rule_row.html",
+        context={
+            "request": request,
+            "rules": db.get_rules(),
+            "account_names": {a["id"]: a["name"] for a in db.list_accounts()},
+            **extra,
+        },
+    )
+
+
+def _account_param(account_id: Optional[str]) -> Optional[int]:
+    """An account id from a form or query string; blank or unknown = all."""
+    try:
+        wanted = int(account_id) if account_id else None
+    except ValueError:
+        return None
+    return wanted if any(a["id"] == wanted for a in db.list_accounts()) else None
+
 
 @app.get("/rules", response_class=HTMLResponse)
 async def rules_page(
@@ -527,16 +858,28 @@ async def rules_page(
 ):
     """Rules page; the query params prefill the form ("create rule from
     this" on a transaction, §6)."""
-    rules = db.get_rules()
+    accounts = db.list_accounts()
     return templates.TemplateResponse(
         request=request,
         name="rules.html",
         context={
             "request": request,
-            "rules": rules,
+            "rules": db.get_rules(),
+            "accounts": accounts,
+            "account_names": {a["id"]: a["name"] for a in accounts},
             "prefill": {"pattern": pattern, "category": category, "cleaned_merchant": cleaned_merchant},
+            "match_count": db.count_rule_matches(pattern) if pattern else None,
         },
     )
+
+
+@app.get("/rules/match-count", response_class=HTMLResponse)
+async def rule_match_count(pattern: str = "", account_id: Optional[str] = None):
+    """Live match count for the rule form (§6), with the engine's matching."""
+    if not pattern.strip():
+        return HTMLResponse("")
+    n = db.count_rule_matches(pattern, _account_param(account_id))
+    return HTMLResponse(f"Matches {n} transaction{'s' if n != 1 else ''}")
 
 
 @app.post("/rules", response_class=HTMLResponse)
@@ -545,33 +888,27 @@ async def create_rule(
     pattern: str = Form(...),
     category: str = Form(...),
     cleaned_merchant: Optional[str] = Form(None),
+    priority: int = Form(0),
+    mark_transfer: bool = Form(False),
+    account_id: Optional[str] = Form(None),
 ):
-    add_rule(pattern, category, cleaned_merchant or None)
-    rules = db.get_rules()
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/rule_row.html",
-        context={"request": request, "rules": rules},
+    add_rule(
+        pattern,
+        category,
+        cleaned_merchant or None,
+        priority=priority,
+        mark_transfer=mark_transfer,
+        account_id=_account_param(account_id),
     )
+    return _rules_fragment(request)
 
 
 @app.delete("/rules/{rule_id}", response_class=HTMLResponse)
 async def delete_rule_route(request: Request, rule_id: int):
     remove_rule(rule_id)
-    rules = db.get_rules()
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/rule_row.html",
-        context={"request": request, "rules": rules},
-    )
+    return _rules_fragment(request)
 
 
 @app.post("/rules/apply", response_class=HTMLResponse)
 async def apply_rules_route(request: Request):
-    updated = apply_all_rules()
-    rules = db.get_rules()
-    return templates.TemplateResponse(
-        request=request,
-        name="partials/rule_row.html",
-        context={"request": request, "rules": rules, "updated_count": updated},
-    )
+    return _rules_fragment(request, updated_count=apply_all_rules())

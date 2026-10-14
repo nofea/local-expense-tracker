@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Accounts — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Accounts</h2>
+    <p>Bank accounts and cards that statements are filed under</p>
+</div>
+
+<div class="card animate-in" style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 1rem;">
+        Add Account
+    </h3>
+    <form class="form-row"
+          hx-post="/accounts" hx-target="#accounts-table" hx-swap="outerHTML"
+          hx-on::after-request="if (event.detail.successful) this.reset()">
+        <div class="form-group">
+            <label for="account-name">Name</label>
+            <input type="text" id="account-name" name="name" placeholder="e.g. HDFC Savings, Amex Gold" required>
+        </div>
+        <div class="form-group" style="max-width: 180px;">
+            <label for="account-kind">Type</label>
+            <select id="account-kind" name="kind">
+                {% for k in account_kinds %}<option value="{{ k }}">{{ k | replace('_', ' ') }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="account-institution">Institution (optional)</label>
+            <input type="text" id="account-institution" name="institution" placeholder="e.g. HDFC Bank">
+        </div>
+        <button type="submit" class="btn btn-primary">Add Account</button>
+    </form>
+</div>
+
+{% include "partials/accounts_table.html" %}
+{% endblock %}

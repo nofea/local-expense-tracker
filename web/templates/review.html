@@ -6,9 +6,14 @@
     <h2>Review import #{{ review.statement.id }}</h2>
     <p>
         {{ review.statement.file_name }} · {{ review.statement.account_name }} ·
-        <span class="badge badge-{{ {'review': 'warn', 'committed': 'ok', 'failed': 'error', 'discarded': 'muted'}.get(review.statement.status, 'muted') }}">{{ review.statement.status }}</span>
+        <span class="badge badge-{{ {'review': 'warn', 'needs_password': 'warn', 'committed': 'ok', 'failed': 'error', 'discarded': 'muted'}.get(review.statement.status, 'muted') }}">{{ review.statement.status | replace('_', ' ') }}</span>
     </p>
 </div>
 
+{% if review.statement.status in ('queued', 'extracting', 'needs_password') %}
+{# Still running, or waiting for a PDF password: show the live job status. #}
+{% with statement = review.statement %}{% include "partials/import_status.html" %}{% endwith %}
+{% else %}
 {% include "partials/review_body.html" %}
+{% endif %}
 {% endblock %}

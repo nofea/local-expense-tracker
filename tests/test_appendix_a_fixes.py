@@ -150,18 +150,18 @@ class TestUploadHandling(unittest.TestCase):
         with patch("web.app.jobs.submit") as submit:
             res = self.client.post(
                 "/upload",
-                files={"file": ("../../evil.csv", b"Date,Description,Amount\nevil\n", "text/csv")},
+                files={"file": ("../../evil.pdf", b"%PDF-1.4 evil", "application/pdf")},
                 data={"model": "llama3.1"},
             )
 
         self.assertEqual(res.status_code, 200)
         job = submit.call_args[0][0]
-        self.assertEqual(job.source_name, "evil.csv")
+        self.assertEqual(job.source_name, "evil.pdf")
         self.assertNotIn("evil", job.file_path.name)
         self.assertEqual(job.file_path.parent, jobs.tmp_dir())
         self.assertTrue(job.file_path.exists())
         job.file_path.unlink()
-        self.assertFalse((_REPO_ROOT.parent / "evil.csv").exists())
+        self.assertFalse((_REPO_ROOT.parent / "evil.pdf").exists())
 
     @patch("web.app.is_ollama_available", return_value=True)
     def test_rejects_unsupported_extension(self, _avail):

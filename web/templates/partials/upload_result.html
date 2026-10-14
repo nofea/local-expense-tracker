@@ -1,3 +1,8 @@
+{% if notice %}
+<div class="upload-result">
+    <h4>{{ notice }}</h4>
+</div>
+{% else %}
 <div class="upload-result error">
     <h4>❌ Processing Failed</h4>
     <p style="margin-top: 0.5rem; font-size: 0.9rem;">{{ error }}</p>
@@ -7,3 +12,4 @@
     </div>
     {% endif %}
 </div>
+{% endif %}

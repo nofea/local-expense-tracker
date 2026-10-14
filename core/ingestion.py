@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import pdfplumber
+from pdfminer.pdfdocument import PDFEncryptionError, PDFPasswordIncorrect
+from pdfplumber.utils.exceptions import PdfminerException
 
 from core.models import StatementMetadata, to_minor
 from core.ollama_client import DEFAULT_MODEL, extract_statement_metadata, extract_transactions
@@ -22,18 +24,42 @@ log = logging.getLogger(__name__)
 CHUNK_SIZE = 6000
 
 
+class ExtractionError(Exception):
+    """The file could not be turned into text at all; the job fails."""
+
+
+class PasswordRequired(Exception):
+    """The PDF is encrypted and the password is missing or wrong (§3.2).
+    The job waits in ``needs_password``; the message never holds the password."""
+
+
 # ---------------------------------------------------------------------------
 # Text extraction
 # ---------------------------------------------------------------------------
 
-def extract_pages_from_pdf(filepath: str | Path) -> list[str]:
-    """Extract the text of each non-empty page of a PDF using pdfplumber."""
+def extract_pages_from_pdf(filepath: str | Path, password: Optional[str] = None) -> list[str]:
+    """Extract the text of each non-empty page of a PDF using pdfplumber.
+
+    Raises :class:`PasswordRequired` if the PDF is encrypted and *password*
+    is missing or wrong.  The password is never logged (§9.4).
+    """
     pages: list[str] = []
-    with pdfplumber.open(str(filepath)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                pages.append(text)
+    try:
+        with pdfplumber.open(str(filepath), password=password or "") as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+    except Exception as exc:
+        # pdfplumber wraps pdfminer's errors in PdfminerException.
+        cause = exc.args[0] if isinstance(exc, PdfminerException) and exc.args else exc
+        if isinstance(cause, PDFPasswordIncorrect):
+            raise PasswordRequired(
+                "The password is incorrect." if password else "This PDF is password-protected."
+            ) from None
+        if isinstance(cause, PDFEncryptionError):
+            raise ExtractionError("This PDF uses an encryption method that can't be read.") from None
+        raise
     return pages
 
 
@@ -128,26 +154,25 @@ class Extraction:
         return None if b is None else to_minor(b)
 
 
-class ExtractionError(Exception):
-    """The file could not be turned into text at all; the job fails."""
-
-
-def read_pages(filepath: str | Path, source_name: str) -> tuple[list[str], str]:
+def read_pages(
+    filepath: str | Path, source_name: str, password: Optional[str] = None
+) -> tuple[list[str], str]:
     """Extract ``(pages, header)`` from a PDF or CSV (§3.2).
 
     The parser is chosen by *source_name*'s extension, so a temp file can be
-    read under the user's original name.  Raises :class:`ExtractionError`.
+    read under the user's original name.  Raises :class:`ExtractionError`,
+    or :class:`PasswordRequired` for a locked PDF.
     """
     ext = Path(source_name).suffix.lower()
     if ext == ".pdf":
-        pages, header = extract_pages_from_pdf(filepath), ""
+        pages, header = extract_pages_from_pdf(filepath, password), ""
     elif ext == ".csv":
         header, body = extract_text_from_csv(filepath)
         pages = [body] if body.strip() else []
     else:
         raise ExtractionError(f"Unsupported file type: {ext}")
     if not any(p.strip() for p in pages):
-        raise ExtractionError("No text could be extracted (scanned PDF or empty file?).")
+        raise ExtractionError("No text could be extracted: no text layer (scanned PDF?) or an empty file.")
     return pages, header
 
 

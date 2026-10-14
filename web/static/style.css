@@ -1048,3 +1048,37 @@ label {
 tr.is-editing td { background: var(--bg-hover); vertical-align: top; }
 a.stat-link { color: inherit; text-decoration: none; }
 a.stat-link:hover, a.stat-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ======================================================================
+   Upload options, CSV mapping form (app_spec.md §3.1–3.2), accounts, rules
+   ====================================================================== */
+
+.upload-options { margin-top: 1.25rem; flex-wrap: wrap; }
+.upload-options .form-group { min-width: 160px; }
+
+.checkbox-label.plain { color: var(--text-secondary); text-transform: none; letter-spacing: 0; }
+.radio-label {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: center;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.csv-mapping form { margin-top: 1rem; }
+.csv-mapping .mapping-row { flex-wrap: wrap; margin-bottom: 1rem; }
+.csv-mapping .mapping-row .form-group { min-width: 170px; }
+.mapping-preview { margin-bottom: 1rem; max-height: 240px; overflow: auto; }
+.mapping-preview table { font-size: 0.8rem; }
+.mapping-preview td, .mapping-preview th { white-space: nowrap; padding: 0.35rem 0.6rem; }
+.mapping-amounts {
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    padding: 0.75rem 1rem 1rem;
+    margin-bottom: 1rem;
+}
+.mapping-amounts legend { padding: 0 0.4rem; color: var(--text-secondary); font-size: 0.85rem; }
+.mapping-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+
+.filter-inline { display: inline-flex; gap: 0.5rem; align-items: center; margin-left: auto; }
+.filter-inline label { margin: 0; }

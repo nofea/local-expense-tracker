@@ -246,7 +246,7 @@ class TestWebConfig(unittest.TestCase):
     def test_blank_model_falls_back_to_config(self, _avail):
         cfg = Config(llm=LLMConfig(model="mistral"))
         with patch("web.app.get_config", return_value=cfg), patch("web.app.jobs.submit") as submit:
-            self.client.post("/upload", files={"file": ("m.csv", os.urandom(8).hex().encode(), "text/csv")})
+            self.client.post("/upload", files={"file": ("m.pdf", os.urandom(8).hex().encode(), "application/pdf")})
         job = submit.call_args[0][0]
         job.file_path.unlink(missing_ok=True)
         self.assertEqual(job.model, "mistral")
