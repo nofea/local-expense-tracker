@@ -5,7 +5,10 @@ Version history:
 * **0** — either an empty file (fresh install) or the original v1 schema
   (``transactions`` with REAL ``amount`` and ``id = sha256(date|desc|amount)``,
   plus ``category_rules``).
-* **2** — the schema in app_spec.md §2.  v1 → v2 follows Appendix B.
+* **2** — accounts, statements, staged rows, integer money.  v1 → v2
+  follows app_spec.md Appendix B.
+* **3** — v2 plus families, members and account holders (§2.2, §2.4).
+  v2 → v3 follows Appendix C.  A v1 file is upgraded v1 → v2 → v3.
 
 ``migrate`` is called from ``database.init_db`` on every startup and is a
 no-op once the file is at ``SCHEMA_VERSION``.
@@ -29,7 +32,7 @@ from core.models import (
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DEFAULT_ACCOUNT_NAME = "Default"
 
@@ -141,6 +144,38 @@ CREATE TABLE csv_mappings (
 )"""
 
 
+# ---------------------------------------------------------------------------
+# Schema v3 additions (app_spec.md §2.2, Appendix C): families, members and
+# which members hold which accounts.  "Exactly one primary" and "all holders
+# in one family" are enforced in core/database.py; the partial unique index
+# only guarantees "at most one primary".
+# ---------------------------------------------------------------------------
+
+_V3_DDL = [
+    """
+CREATE TABLE families (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL UNIQUE
+)""",
+    """
+CREATE TABLE members (
+    id         INTEGER PRIMARY KEY,
+    family_id  INTEGER NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    UNIQUE (family_id, name)
+)""",
+    """
+CREATE TABLE account_members (
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    member_id  INTEGER NOT NULL REFERENCES members(id)  ON DELETE CASCADE,
+    role       TEXT NOT NULL CHECK (role IN ('primary', 'joint')),
+    PRIMARY KEY (account_id, member_id)
+)""",
+    "CREATE INDEX idx_account_members_member ON account_members(member_id)",
+    "CREATE UNIQUE INDEX idx_account_one_primary ON account_members(account_id) WHERE role = 'primary'",
+]
+
+
 @dataclass
 class MigrationReport:
     """What a v1 → v2 migration did, for logging and tests."""
@@ -168,31 +203,37 @@ def migrate(
     ``None`` skips the backup).  *run_rules* is the §6 rules engine; it is
     injected to avoid a circular import with ``core.database``.
 
-    Returns a report when a v1 → v2 migration ran, else ``None``.
+    Returns a report when a v1 → v2 migration ran, else ``None``.  Each
+    upgrade step is its own transaction, so a failed v2 → v3 step leaves a
+    valid v2 file.
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version == SCHEMA_VERSION:
         return None
-    if version != 0:
+    if version not in (0, 2):
         raise RuntimeError(
             f"Database schema version {version} is not supported "
-            f"(this build understands 0 and {SCHEMA_VERSION})."
+            f"(this build understands 0, 2 and {SCHEMA_VERSION})."
         )
 
-    has_v1 = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transactions'"
-    ).fetchone()
+    report = None
+    if version == 0:
+        has_v1 = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transactions'"
+        ).fetchone()
+        if not has_v1:
+            _in_transaction(conn, _create_current, SCHEMA_VERSION)
+            log.info("Created schema v%d", SCHEMA_VERSION)
+            return None
 
-    if not has_v1:
-        _in_transaction(conn, _create_v2)
-        log.info("Created schema v%d", SCHEMA_VERSION)
-        return None
+        report = MigrationReport()
+        if db_path is not None:
+            report.backup_path = _backup(conn, Path(db_path))
+        _in_transaction(conn, lambda c: _migrate_v1_to_v2(c, run_rules, report), 2)
+        log.info("Migrated schema v1 -> v2: %s", report)
 
-    report = MigrationReport()
-    if db_path is not None:
-        report.backup_path = _backup(conn, Path(db_path))
-    _in_transaction(conn, lambda c: _migrate_v1_to_v2(c, run_rules, report))
-    log.info("Migrated schema v1 -> v%d: %s", SCHEMA_VERSION, report)
+    _in_transaction(conn, _migrate_v2_to_v3, 3)
+    log.info("Migrated schema v2 -> v3")
     return report
 
 
@@ -201,9 +242,10 @@ def migrate(
 # ---------------------------------------------------------------------------
 
 def _in_transaction(
-    conn: sqlite3.Connection, work: Callable[[sqlite3.Connection], None]
+    conn: sqlite3.Connection, work: Callable[[sqlite3.Connection], None], version: int
 ) -> None:
-    """Run *work* in one explicit transaction with foreign keys deferred.
+    """Run *work* in one explicit transaction with foreign keys deferred,
+    then set ``user_version`` to *version* before committing.
 
     ``foreign_keys`` can only be toggled outside a transaction, and table
     rebuilds need it off; integrity is checked before committing instead.
@@ -219,7 +261,7 @@ def _in_transaction(
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise RuntimeError(f"Foreign key violations after migration: {violations[:5]}")
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.execute(f"PRAGMA user_version = {version}")
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
@@ -244,7 +286,8 @@ def _backup(conn: sqlite3.Connection, db_path: Path) -> Path:
     return target
 
 
-def _create_v2(conn: sqlite3.Connection) -> None:
+def _create_current(conn: sqlite3.Connection) -> None:
+    """A fresh file gets the latest schema directly."""
     for ddl in (
         _V2_ACCOUNTS,
         _V2_STATEMENTS,
@@ -253,7 +296,14 @@ def _create_v2(conn: sqlite3.Connection) -> None:
         *_V2_TX_INDEXES,
         _V2_STAGED_ROWS,
         _V2_CSV_MAPPINGS,
+        *_V3_DDL,
     ):
+        conn.execute(ddl)
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """Appendix C: purely additive, so no backup and no data rewritten."""
+    for ddl in _V3_DDL:
         conn.execute(ddl)
 
 

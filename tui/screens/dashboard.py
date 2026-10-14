@@ -57,12 +57,15 @@ class CategoryBar(Static):
 
 
 class DashboardScreen(Screen):
-    """Monthly summary for the app's selected month and account (§7.2)."""
+    """Monthly summary for the app's selected month and scope (§7.2)."""
 
     BINDINGS = [
         Binding("left", "prev_month", "Prev month"),
         Binding("right", "next_month", "Next month"),
         Binding("a", "cycle_account", "Account"),
+        Binding("f", "cycle_family", "Family"),
+        Binding("m", "cycle_member", "Member"),
+        Binding("j", "toggle_joint", "Joint"),
         Binding("r", "refresh", "Refresh"),
     ]
 
@@ -92,13 +95,13 @@ class DashboardScreen(Screen):
 
     def _refresh_data(self) -> None:
         app = self.app
-        filters = dict(db_path=app.db_path, account_id=app.account_id)
+        filters = dict(db_path=app.db_path, **app.scope())
         summary = get_monthly_summary(app.year, app.month, **filters)
         breakdown = get_category_breakdown(app.year, app.month, **filters)
         uncategorized = get_uncategorized_count(app.year, app.month, **filters)
 
         self.query_one("#dash-title", Label).update(
-            f" 📊 Dashboard — {app.period_label} · {app.account_label()}"
+            f" 📊 Dashboard — {app.period_label} · {app.scope_label()}"
         )
 
         # Update stat cards
@@ -132,6 +135,18 @@ class DashboardScreen(Screen):
 
     def action_cycle_account(self) -> None:
         self.notify(f"Showing {self.app.cycle_account()}")
+        self._refresh_data()
+
+    def action_cycle_family(self) -> None:
+        self.notify(f"Showing {self.app.cycle_family()}")
+        self._refresh_data()
+
+    def action_cycle_member(self) -> None:
+        self.notify(f"Showing {self.app.cycle_member()}")
+        self._refresh_data()
+
+    def action_toggle_joint(self) -> None:
+        self.notify(self.app.toggle_joint())
         self._refresh_data()
 
     def action_refresh(self) -> None:

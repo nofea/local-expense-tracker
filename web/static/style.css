@@ -1080,5 +1080,14 @@ a.stat-link:hover, a.stat-link:focus-visible { outline: 2px solid var(--accent);
 .mapping-amounts legend { padding: 0 0.4rem; color: var(--text-secondary); font-size: 0.85rem; }
 .mapping-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
 
-.filter-inline { display: inline-flex; gap: 0.5rem; align-items: center; margin-left: auto; }
+.filter-inline { display: inline-flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; margin-left: auto; }
 .filter-inline label { margin: 0; }
+.filter-inline .form-group { flex: 0 1 auto; min-width: 140px; }
+.filter-inline .checkbox-label { margin-bottom: 0.6rem; }
+.month-nav { flex-wrap: wrap; }
+
+/* --- Families page (§7.1) --- */
+.family-card { margin-bottom: 1.5rem; }
+.family-header { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+.family-header .cell-input { max-width: 260px; font-weight: 600; }
+.holder-checks { display: flex; flex-wrap: wrap; gap: 0.25rem 0.9rem; }

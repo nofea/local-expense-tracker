@@ -1,8 +1,9 @@
 """Expense Tracker Terminal UI — main application (app_spec.md §7.2).
 
 The app owns the shared view state, meaning the selected month and the
-account filter, so the dashboard and the transaction log always show the
-same period.  Screens read it on every refresh.
+scope filters (account, family, member, include-joint; §2.4), so the
+dashboard and the transaction log always show the same period and scope.
+Screens read it on every refresh.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Optional
 from textual.app import App
 from textual.binding import Binding
 
-from core.database import list_accounts
+from core.database import list_accounts, list_families, list_members
 from tui.screens.dashboard import DashboardScreen
 from tui.screens.transactions import TransactionsScreen
 
@@ -51,6 +52,9 @@ class ExpenseTrackerTUI(App):
         self.year = year or today.year
         self.month = month or today.month
         self.account_id: Optional[int] = None  # None = all accounts
+        self.family_id: Optional[int] = None  # None = all families
+        self.member_id: Optional[int] = None  # None = all members
+        self.include_joint = False  # member scope: primary accounts only unless set
         self.db_path = db_path
 
     def on_mount(self) -> None:
@@ -85,6 +89,50 @@ class ExpenseTrackerTUI(App):
         position = ids.index(self.account_id) if self.account_id in ids else 0
         self.account_id = ids[(position + 1) % len(ids)]
         return self.account_label()
+
+    def scope(self) -> dict:
+        """The scope filters as keyword arguments for core queries (§2.4)."""
+        return dict(
+            account_id=self.account_id,
+            family_id=self.family_id,
+            member_id=self.member_id,
+            include_joint=self.member_id is not None and self.include_joint,
+        )
+
+    def scope_label(self) -> str:
+        """e.g. "The Sharmas · Asha (+ joint) · All accounts"."""
+        parts = []
+        if self.family_id is not None:
+            parts += [f["name"] for f in list_families(self.db_path)["families"] if f["id"] == self.family_id]
+        if self.member_id is not None:
+            for m in list_members(db_path=self.db_path):
+                if m["id"] == self.member_id:
+                    parts.append(m["name"] + (" (+ joint)" if self.include_joint else ""))
+        return " · ".join(parts + [self.account_label()])
+
+    def cycle_family(self) -> str:
+        """Advance the family filter: all → each family by name → all.
+        Resets the member filter and include-joint."""
+        ids: list[Optional[int]] = [None] + [f["id"] for f in list_families(self.db_path)["families"]]
+        position = ids.index(self.family_id) if self.family_id in ids else 0
+        self.family_id = ids[(position + 1) % len(ids)]
+        self.member_id = None
+        self.include_joint = False
+        return self.scope_label()
+
+    def cycle_member(self) -> str:
+        """Advance the member filter through the selected family's members
+        (every family's, by family then name, when none is selected)."""
+        ids: list[Optional[int]] = [None] + [m["id"] for m in list_members(self.family_id, self.db_path)]
+        position = ids.index(self.member_id) if self.member_id in ids else 0
+        self.member_id = ids[(position + 1) % len(ids)]
+        return self.scope_label()
+
+    def toggle_joint(self) -> str:
+        if self.member_id is None:
+            return "Select a member first (m)"
+        self.include_joint = not self.include_joint
+        return self.scope_label()
 
 
 def main():

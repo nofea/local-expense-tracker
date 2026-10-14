@@ -1,4 +1,4 @@
-"""SQLite database layer for the expense tracker (schema v2, app_spec.md §2).
+"""SQLite database layer for the expense tracker (schema v3, app_spec.md §2).
 
 All functions accept an optional *db_path* so callers can override the
 default location (``storage.db_path`` in config.toml, default
@@ -8,8 +8,9 @@ default location (``storage.db_path`` in config.toml, default
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from core import migrations
 from core.config import get_config
@@ -153,7 +154,7 @@ def update_account(
 def delete_account(account_id: int, db_path: Optional[str | Path] = None) -> None:
     """Delete an account that has no statements (§7.1).
 
-    Its CSV mappings go with it.  Rules scoped to it must be deleted first,
+    Its CSV mappings and holder links (§2.4) go with it.  Rules scoped to it must be deleted first,
     since turning them into all-account rules would change other rows.
     """
     conn = connect(db_path)
@@ -197,9 +198,282 @@ def list_accounts_summary(db_path: Optional[str | Path] = None) -> list[dict]:
             FROM accounts a ORDER BY a.name
             """
         ).fetchall()
-        return [dict(r) for r in rows]
+        holders = _account_holders(conn)
+        return [{**dict(r), "holders": holders.get(r["id"], [])} for r in rows]
     finally:
         conn.close()
+
+
+def _account_holders(conn: sqlite3.Connection) -> dict[int, list[dict]]:
+    """account id -> its holders (member_id, name, role), primary first."""
+    holders: dict[int, list[dict]] = {}
+    for r in conn.execute(
+        """
+        SELECT am.account_id, am.member_id, m.name, am.role
+        FROM account_members am JOIN members m ON m.id = am.member_id
+        ORDER BY am.role = 'joint', m.name
+        """
+    ):
+        holders.setdefault(r["account_id"], []).append(
+            {"member_id": r["member_id"], "name": r["name"], "role": r["role"]}
+        )
+    return holders
+
+
+# ---------------------------------------------------------------------------
+# Families, members & account holders (§2.4)
+# ---------------------------------------------------------------------------
+
+class FamilyError(ValueError):
+    """A family, member or holder change was refused; the message is shown to the user."""
+
+
+@contextmanager
+def _write_tx(db_path: Optional[str | Path]) -> Iterator[sqlite3.Connection]:
+    """A connection inside ``BEGIN IMMEDIATE``, so checks and writes are atomic."""
+    conn = connect(db_path)
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def _clean_name(name: str, what: str) -> str:
+    name = " ".join((name or "").split())
+    if not name:
+        raise FamilyError(f"The {what} needs a name.")
+    return name
+
+
+def _require(conn: sqlite3.Connection, table: str, row_id: int, what: str) -> sqlite3.Row:
+    row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (row_id,)).fetchone()
+    if row is None:
+        raise FamilyError(f"{what} not found.")
+    return row
+
+
+def create_family(name: str, db_path: Optional[str | Path] = None) -> int:
+    name = _clean_name(name, "family")
+    try:
+        with _write_tx(db_path) as conn:
+            return conn.execute("INSERT INTO families (name) VALUES (?)", (name,)).lastrowid
+    except sqlite3.IntegrityError:
+        raise FamilyError(f"A family named '{name}' already exists.") from None
+
+
+def rename_family(family_id: int, name: str, db_path: Optional[str | Path] = None) -> None:
+    name = _clean_name(name, "family")
+    try:
+        with _write_tx(db_path) as conn:
+            _require(conn, "families", family_id, "Family")
+            conn.execute("UPDATE families SET name = ? WHERE id = ?", (name, family_id))
+    except sqlite3.IntegrityError:
+        raise FamilyError(f"A family named '{name}' already exists.") from None
+
+
+def delete_family(family_id: int, db_path: Optional[str | Path] = None) -> None:
+    """Delete a family with its members and their holder links.  All holders
+    of an account are in one family, so no account is left half-linked; the
+    ledger is untouched."""
+    with _write_tx(db_path) as conn:
+        _require(conn, "families", family_id, "Family")
+        conn.execute("DELETE FROM families WHERE id = ?", (family_id,))
+
+
+def create_member(family_id: int, name: str, db_path: Optional[str | Path] = None) -> int:
+    name = _clean_name(name, "member")
+    try:
+        with _write_tx(db_path) as conn:
+            _require(conn, "families", family_id, "Family")
+            return conn.execute(
+                "INSERT INTO members (family_id, name) VALUES (?, ?)", (family_id, name)
+            ).lastrowid
+    except sqlite3.IntegrityError:
+        raise FamilyError(f"This family already has a member named '{name}'.") from None
+
+
+def _shared_accounts(conn: sqlite3.Connection, member_id: int, role: Optional[str] = None) -> int:
+    """How many of the member's accounts (optionally in *role*) have other holders."""
+    return conn.execute(
+        f"""
+        SELECT COUNT(*) FROM account_members am
+        WHERE am.member_id = ? {"AND am.role = ?" if role else ""}
+          AND EXISTS (SELECT 1 FROM account_members o
+                      WHERE o.account_id = am.account_id AND o.member_id != am.member_id)
+        """,
+        (member_id, role) if role else (member_id,),
+    ).fetchone()[0]
+
+
+def update_member(
+    member_id: int,
+    *,
+    name: str,
+    family_id: int,
+    db_path: Optional[str | Path] = None,
+) -> None:
+    """Rename a member and/or move them to another family.  A move is refused
+    while they share an account, which would then span two families."""
+    name = _clean_name(name, "member")
+    try:
+        with _write_tx(db_path) as conn:
+            member = _require(conn, "members", member_id, "Member")
+            _require(conn, "families", family_id, "Family")
+            if family_id != member["family_id"] and _shared_accounts(conn, member_id):
+                raise FamilyError(
+                    f"{member['name']} shares accounts with other members. "
+                    "Change those accounts' holders before moving them to another family."
+                )
+            conn.execute(
+                "UPDATE members SET name = ?, family_id = ? WHERE id = ?", (name, family_id, member_id)
+            )
+    except sqlite3.IntegrityError:
+        raise FamilyError(f"That family already has a member named '{name}'.") from None
+
+
+def delete_member(member_id: int, db_path: Optional[str | Path] = None) -> None:
+    """Delete a member and their holder links.  Refused while they are the
+    primary holder of an account that still has joint holders."""
+    with _write_tx(db_path) as conn:
+        member = _require(conn, "members", member_id, "Member")
+        if _shared_accounts(conn, member_id, "primary"):
+            raise FamilyError(
+                f"{member['name']} is the primary holder of a joint account. "
+                "Make another holder primary first."
+            )
+        conn.execute("DELETE FROM members WHERE id = ?", (member_id,))
+
+
+def set_account_holders(
+    account_id: int,
+    primary_member_id: Optional[int],
+    joint_member_ids: Optional[list[int]] = None,
+    db_path: Optional[str | Path] = None,
+) -> None:
+    """Replace an account's holders (§2.4).  ``None`` and no joint holders
+    unlinks it.  There must be a primary if there are joint holders, and all
+    holders must be in one family."""
+    joint = list(dict.fromkeys(m for m in (joint_member_ids or []) if m != primary_member_id))
+    if joint and primary_member_id is None:
+        raise FamilyError("Choose a primary holder for this account.")
+    with _write_tx(db_path) as conn:
+        _require(conn, "accounts", account_id, "Account")
+        families = set()
+        for member_id in ([primary_member_id] if primary_member_id is not None else []) + joint:
+            families.add(_require(conn, "members", member_id, "Member")["family_id"])
+        if len(families) > 1:
+            raise FamilyError("All holders of an account must be in the same family.")
+        conn.execute("DELETE FROM account_members WHERE account_id = ?", (account_id,))
+        if primary_member_id is not None:
+            conn.execute(
+                "INSERT INTO account_members (account_id, member_id, role) VALUES (?, ?, 'primary')",
+                (account_id, primary_member_id),
+            )
+        conn.executemany(
+            "INSERT INTO account_members (account_id, member_id, role) VALUES (?, ?, 'joint')",
+            [(account_id, m) for m in joint],
+        )
+
+
+def list_families(db_path: Optional[str | Path] = None) -> dict:
+    """Everything the Families page and the scope pickers need.
+
+    Returns ``{"families": [...], "unlinked": [...]}``.  Each family is
+    ``{id, name, members, accounts}``; each member ``{id, name, family_id,
+    accounts: [{id, name, kind, role}]}``; each family account ``{id, name,
+    kind, primary_id, joint_ids}``.  *unlinked* lists accounts with no
+    holders.  Everything is ordered by name.
+    """
+    conn = connect(db_path)
+    try:
+        families = [
+            {"id": f["id"], "name": f["name"], "members": [], "accounts": []}
+            for f in conn.execute("SELECT id, name FROM families ORDER BY name")
+        ]
+        by_id = {f["id"]: f for f in families}
+        members = {}
+        for m in conn.execute("SELECT id, name, family_id FROM members ORDER BY name"):
+            member = {"id": m["id"], "name": m["name"], "family_id": m["family_id"], "accounts": []}
+            members[m["id"]] = member
+            by_id[m["family_id"]]["members"].append(member)
+
+        holders = _account_holders(conn)
+        unlinked = []
+        for a in conn.execute("SELECT id, name, kind FROM accounts ORDER BY name"):
+            account_holders = holders.get(a["id"])
+            if not account_holders:
+                unlinked.append(dict(a))
+                continue
+            for h in account_holders:
+                members[h["member_id"]]["accounts"].append({**dict(a), "role": h["role"]})
+            family = by_id[members[account_holders[0]["member_id"]]["family_id"]]
+            family["accounts"].append({
+                **dict(a),
+                "primary_id": next((h["member_id"] for h in account_holders if h["role"] == "primary"), None),
+                "joint_ids": [h["member_id"] for h in account_holders if h["role"] == "joint"],
+            })
+        return {"families": families, "unlinked": unlinked}
+    finally:
+        conn.close()
+
+
+def list_members(
+    family_id: Optional[int] = None, db_path: Optional[str | Path] = None
+) -> list[sqlite3.Row]:
+    """Members (id, name, family_id, family_name), by family then name;
+    only *family_id*'s when given."""
+    conn = connect(db_path)
+    try:
+        return conn.execute(
+            """
+            SELECT m.id, m.name, m.family_id, f.name AS family_name
+            FROM members m JOIN families f ON f.id = m.family_id
+            WHERE (? IS NULL OR m.family_id = ?)
+            ORDER BY f.name, m.name
+            """,
+            (family_id, family_id),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def scope_sql(
+    column: str = "account_id",
+    *,
+    account_id: Optional[int] = None,
+    family_id: Optional[int] = None,
+    member_id: Optional[int] = None,
+    include_joint: bool = False,
+) -> tuple[str, list[object]]:
+    """``" AND ..."`` restricting *column* to a scope's accounts (§2.4).
+
+    The filters intersect.  Each one is an ``IN (subquery)``, never a join,
+    so a transaction is counted once however many holders its account has.
+    Returns ``("", [])`` for "all accounts".
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if account_id is not None:
+        clauses.append(f"{column} = ?")
+        params.append(account_id)
+    if family_id is not None:
+        clauses.append(
+            f"{column} IN (SELECT am.account_id FROM account_members am"
+            " JOIN members m ON m.id = am.member_id WHERE m.family_id = ?)"
+        )
+        params.append(family_id)
+    if member_id is not None:
+        role = "" if include_joint else " AND role = 'primary'"
+        clauses.append(f"{column} IN (SELECT account_id FROM account_members WHERE member_id = ?{role})")
+        params.append(member_id)
+    return "".join(f" AND {c}" for c in clauses), params
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +640,9 @@ def _filters(
     uncategorized: bool = False,
     transfers: str = "show",
     account_id: Optional[int] = None,
+    family_id: Optional[int] = None,
+    member_id: Optional[int] = None,
+    include_joint: bool = False,
 ) -> tuple[str, list[object]]:
     """WHERE clause for the transaction list.
 
@@ -394,9 +671,13 @@ def _filters(
     if uncategorized:
         clauses.append("t.category = 'Uncategorized' AND t.is_transfer = 0")
 
-    if account_id is not None:
-        clauses.append("t.account_id = ?")
-        params.append(account_id)
+    scope, scope_params = scope_sql(
+        "t.account_id", account_id=account_id, family_id=family_id,
+        member_id=member_id, include_joint=include_joint,
+    )
+    if scope:
+        clauses.append(scope.removeprefix(" AND "))
+        params.extend(scope_params)
 
     if transfers == "hide":
         clauses.append("t.is_transfer = 0")
@@ -416,12 +697,18 @@ def get_transactions(
     uncategorized: bool = False,
     transfers: str = "show",
     account_id: Optional[int] = None,
+    family_id: Optional[int] = None,
+    member_id: Optional[int] = None,
+    include_joint: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> list[TransactionRecord]:
     """Fetch transactions with optional filters, newest first."""
     conn = connect(db_path)
-    where, params = _filters(year, month, category, search, uncategorized, transfers, account_id)
+    where, params = _filters(
+        year, month, category, search, uncategorized, transfers,
+        account_id, family_id, member_id, include_joint,
+    )
     sql = (
         "SELECT t.*, s.file_name AS source_file "
         "FROM transactions t JOIN statements s ON s.id = t.statement_id"
@@ -448,10 +735,16 @@ def get_transaction_count(
     uncategorized: bool = False,
     transfers: str = "show",
     account_id: Optional[int] = None,
+    family_id: Optional[int] = None,
+    member_id: Optional[int] = None,
+    include_joint: bool = False,
 ) -> int:
     """Count transactions with optional filters."""
     conn = connect(db_path)
-    where, params = _filters(year, month, category, search, uncategorized, transfers, account_id)
+    where, params = _filters(
+        year, month, category, search, uncategorized, transfers,
+        account_id, family_id, member_id, include_joint,
+    )
     try:
         return conn.execute(f"SELECT COUNT(*) FROM transactions t{where}", params).fetchone()[0]
     finally:

@@ -13,6 +13,7 @@ The full specification — how every part works and why — is in [`app_spec.md`
 - **CSV mappings** — Describe a bank's CSV columns once; later statements with the same header are read without the LLM, so Ollama doesn't even need to be running
 - **Password-protected PDFs** — Enter the password at upload or when asked; it is never saved
 - **Accounts** — File statements under bank accounts and cards, and filter the dashboard and transactions by account
+- **Families** — Group accounts into families and members, with a primary holder and any joint holders per account (add-on cards included). See the whole family's income and spending, a per-member table, or one member's figures, optionally including their joint accounts
 - **Deduplication** — Overlapping statements don't double-count, re-uploading a file is refused, and genuine repeats (two identical coffees on one day) are kept
 - **Undo an import** — Delete an imported statement and all of its transactions in one step
 - **Category rules** — Keyword rules with priorities, per-account scope and a live match count; your manual edits always win over rules
@@ -72,6 +73,9 @@ python -m tui.app
 | `PgUp` / `PgDn` | Previous / next page |
 | `/` | Search (`Esc` clears it) |
 | `a` | Cycle the account filter |
+| `f` | Cycle the family filter (resets the member filter) |
+| `m` | Cycle the member filter |
+| `j` | Include / exclude the selected member's joint accounts |
 | `c` | Set the category of the selected row |
 | `x` | Toggle the transfer flag of the selected row |
 | `r` | Refresh |
@@ -88,6 +92,7 @@ The terminal UI and the web UI can run at the same time; they share the same dat
 4. **Create rules** — on the Category Rules page, map keywords to categories (e.g. `AMZN` → `Shopping`). Mark rules for card payments or self-transfers as transfers.
 5. **Fix individual rows** — on the Transactions page, edit a row's category, merchant name or transfer flag, or delete it.
 6. **View insights** — the Dashboard shows monthly summaries, category breakdowns, trends and top merchants.
+7. **Set up your family (optional)** — on the Families page, create a family, add its members, and pick each account's primary holder and joint holders. Each account's figures count under its primary holder, so the dashboard's per-member table adds up to the family total. Money sent between two members counts as one member's expense and the other's income; don't mark it as a transfer.
 
 Made a mistake? The Imports page can delete a whole import, and you can then upload the file again.
 

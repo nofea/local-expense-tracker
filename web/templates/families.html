@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Families — Expense Tracker{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Families</h2>
+    <p>Group accounts by family member to see a household's or one person's figures</p>
+</div>
+
+<div class="card animate-in" style="margin-bottom: 1.5rem;">
+    <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 1rem;">
+        Add Family
+    </h3>
+    <form class="form-row"
+          hx-post="/families" hx-target="#families-body" hx-swap="outerHTML"
+          hx-on::after-request="if (event.detail.successful) this.reset()">
+        <div class="form-group">
+            <label for="family-name">Name</label>
+            <input type="text" id="family-name" name="name" placeholder="e.g. The Sharmas" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Add Family</button>
+    </form>
+</div>
+
+{% include "partials/families_body.html" %}
+{% endblock %}

@@ -11,6 +11,7 @@
                         <th>Name</th>
                         <th>Type</th>
                         <th>Institution</th>
+                        <th>Holders</th>
                         <th style="text-align:right;">Imports</th>
                         <th style="text-align:right;">Transactions</th>
                         <th><span class="sr-only">Actions</span></th>
@@ -26,6 +27,9 @@
                             </select>
                         </td>
                         <td><input type="text" name="institution" value="{{ a.institution or '' }}" class="cell-input" aria-label="Institution of {{ a.name }}"></td>
+                        <td>
+                            {% for h in a.holders %}{{ h.name }} ({{ h.role }}){{ ', ' if not loop.last }}{% else %}<a href="/families" class="muted-line">not linked</a>{% endfor %}
+                        </td>
                         <td style="text-align:right;">{{ a.statement_count }}</td>
                         <td style="text-align:right;">
                             {% if a.transaction_count %}<a href="/transactions?account_id={{ a.id }}">{{ a.transaction_count }}</a>{% else %}0{% endif %}
