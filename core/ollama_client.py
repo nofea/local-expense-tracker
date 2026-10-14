@@ -3,7 +3,7 @@
 Provides functions to list available models and extract structured
 transaction data from raw text using a local LLM served by Ollama.
 Host, default model, per-chunk timeout and retries come from
-``[llm]`` in config.toml (app_spec.md §1.1, §3.3).
+``[llm]`` in config.toml (app_spec.md §1.4, §3.3).
 
 The output schemas live only in ``core.models`` (Pydantic); they are
 enforced through Ollama's ``format`` parameter and never restated in the

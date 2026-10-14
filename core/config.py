@@ -1,4 +1,4 @@
-"""Application configuration (app_spec.md §1.1).
+"""Application configuration (app_spec.md §1.4).
 
 Settings come from ``config.toml`` at the repo root, or from the file named
 by the ``EXPENSE_TRACKER_CONFIG`` environment variable.  The file is

@@ -1,5 +1,5 @@
 # Copy to config.toml and edit. Every key is optional; these are the defaults.
-# (app_spec.md §1.1)
+# (app_spec.md §1.4)
 
 [llm]
 host = "http://localhost:11434"   # a non-local host sends statement text off this machine
