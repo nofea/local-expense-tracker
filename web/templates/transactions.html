@@ -34,6 +34,8 @@
             {% endfor %}
         </select>
     </div>
+    {% set autosubmit = false %}
+    {% include "partials/scope_filters.html" %}
     {% if accounts | length > 1 %}
     <div class="form-group" style="max-width:180px;">
         <label for="account-filter">Account</label>

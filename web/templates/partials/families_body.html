@@ -1,0 +1,149 @@
+{# Families, their members and account holders (app_spec.md §2.4, §7.1);
+   re-rendered after every change. #}
+<div id="families-body">
+    {% if message %}<div class="flash flash-ok" role="status">{{ message }}</div>{% endif %}
+    {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+    {% for f in families %}
+    <div class="card family-card" id="family-{{ f.id }}">
+        <div class="family-header">
+            <input type="text" name="name" value="{{ f.name }}" class="cell-input" aria-label="Name of family {{ f.name }}">
+            <button class="btn btn-ghost btn-sm"
+                    hx-post="/families/{{ f.id }}" hx-include="previous input"
+                    hx-target="#families-body" hx-swap="outerHTML">Rename</button>
+            <button class="btn btn-danger btn-sm"
+                    hx-delete="/families/{{ f.id }}" hx-target="#families-body" hx-swap="outerHTML"
+                    hx-confirm="Delete the family '{{ f.name }}' and its {{ f.members | length }} member(s)? Their transactions are kept.">Delete family</button>
+            <a class="btn btn-ghost btn-sm" href="/?family_id={{ f.id }}">Dashboard</a>
+        </div>
+
+        <h4 class="muted-line" style="margin-bottom: 0.5rem;">Members</h4>
+        {% if f.members %}
+        <div class="table-wrapper" style="margin-bottom: 1rem;">
+            <table class="review-table">
+                <thead>
+                    <tr><th>Name</th><th>Family</th><th>Accounts</th><th><span class="sr-only">Actions</span></th></tr>
+                </thead>
+                <tbody>
+                    {% for m in f.members %}
+                    <tr>
+                        <td><input type="text" name="name" value="{{ m.name }}" class="cell-input" aria-label="Name of {{ m.name }}"></td>
+                        <td>
+                            <select name="family_id" class="cell-input" aria-label="Family of {{ m.name }}">
+                                {% for other in families %}<option value="{{ other.id }}" {{ 'selected' if other.id == f.id }}>{{ other.name }}</option>{% endfor %}
+                            </select>
+                        </td>
+                        <td>
+                            {% for a in m.accounts %}{{ a.name }} <span class="muted-line">({{ a.role }})</span>{{ ', ' if not loop.last }}{% else %}<span class="muted-line">none</span>{% endfor %}
+                        </td>
+                        <td class="row-actions" style="white-space:nowrap;">
+                            <button class="btn btn-ghost btn-sm"
+                                    hx-post="/members/{{ m.id }}" hx-include="closest tr"
+                                    hx-target="#families-body" hx-swap="outerHTML">Save</button>
+                            <button class="btn btn-danger btn-sm"
+                                    hx-delete="/members/{{ m.id }}" hx-target="#families-body" hx-swap="outerHTML"
+                                    hx-confirm="Delete the member '{{ m.name }}'? Their accounts and transactions are kept.">Delete</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        <form class="form-row" style="margin-bottom: 1.25rem;"
+              hx-post="/families/{{ f.id }}/members" hx-target="#families-body" hx-swap="outerHTML">
+            <div class="form-group" style="max-width: 280px;">
+                <label for="member-name-{{ f.id }}">New member</label>
+                <input type="text" id="member-name-{{ f.id }}" name="name" placeholder="e.g. Asha" required>
+            </div>
+            <button type="submit" class="btn btn-ghost btn-sm">Add member</button>
+        </form>
+
+        <h4 class="muted-line" style="margin-bottom: 0.5rem;">Accounts</h4>
+        {% if f.accounts %}
+        <div class="table-wrapper">
+            <table class="review-table">
+                <thead>
+                    <tr><th>Account</th><th>Primary holder</th><th>Joint holders</th><th><span class="sr-only">Actions</span></th></tr>
+                </thead>
+                <tbody>
+                    {% for a in f.accounts %}
+                    <tr>
+                        <td>{{ a.name }} <span class="muted-line">({{ a.kind | replace('_', ' ') }})</span></td>
+                        <td>
+                            <select name="primary_member_id" class="cell-input" aria-label="Primary holder of {{ a.name }}">
+                                <option value="">— not linked —</option>
+                                {% for m in f.members %}<option value="{{ m.id }}" {{ 'selected' if m.id == a.primary_id }}>{{ m.name }}</option>{% endfor %}
+                            </select>
+                        </td>
+                        <td>
+                            <div class="holder-checks">
+                                {% for m in f.members %}
+                                <label class="checkbox-label">
+                                    <input type="checkbox" name="joint_member_ids" value="{{ m.id }}" {{ 'checked' if m.id in a.joint_ids }}>
+                                    {{ m.name }}
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm"
+                                    hx-post="/accounts/{{ a.id }}/holders" hx-include="closest tr"
+                                    hx-target="#families-body" hx-swap="outerHTML">Save</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="muted-line">No accounts linked yet. Link one below.</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="empty-state">
+            <div class="empty-icon">👪</div>
+            <h3>No families yet</h3>
+            <p>Add one above, then add its members and link their accounts.</p>
+        </div>
+    </div>
+    {% endfor %}
+
+    {% if unlinked %}
+    <div class="card">
+        <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.5rem;">
+            Not linked to anyone
+        </h3>
+        <p class="muted-line" style="margin-bottom: 1rem;">
+            These accounts count only under "All accounts". Pick a primary holder to add one to a family.
+        </p>
+        <div class="table-wrapper">
+            <table class="review-table">
+                <tbody>
+                    {% for a in unlinked %}
+                    <tr>
+                        <td>{{ a.name }} <span class="muted-line">({{ a.kind | replace('_', ' ') }})</span></td>
+                        <td>
+                            <select name="primary_member_id" class="cell-input" aria-label="Primary holder of {{ a.name }}">
+                                <option value="">— choose primary holder —</option>
+                                {% for f in families if f.members %}
+                                <optgroup label="{{ f.name }}">
+                                    {% for m in f.members %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+                                </optgroup>
+                                {% endfor %}
+                            </select>
+                        </td>
+                        <td>
+                            <button class="btn btn-ghost btn-sm"
+                                    hx-post="/accounts/{{ a.id }}/holders" hx-include="closest tr"
+                                    hx-target="#families-body" hx-swap="outerHTML">Link</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>

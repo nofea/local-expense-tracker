@@ -41,6 +41,9 @@ class TransactionsScreen(Screen):
         Binding("slash", "search", "Search", key_display="/"),
         Binding("escape", "clear_search", "Clear search", show=False),
         Binding("a", "cycle_account", "Account"),
+        Binding("f", "cycle_family", "Family"),
+        Binding("m", "cycle_member", "Member"),
+        Binding("j", "toggle_joint", "Joint"),
         Binding("c", "set_category", "Category"),
         Binding("x", "toggle_transfer", "Transfer"),
         Binding("r", "refresh", "Refresh"),
@@ -80,7 +83,7 @@ class TransactionsScreen(Screen):
             year=app.year,
             month=app.month,
             search=self.search or None,
-            account_id=app.account_id,
+            **app.scope(),
         )
 
     def _load_data(self) -> None:
@@ -119,13 +122,13 @@ class TransactionsScreen(Screen):
         if table.row_count:
             table.move_cursor(row=min(cursor_row, table.row_count - 1))
 
-        title = f" 📋 Transactions — {app.period_label} · {app.account_label()}"
+        title = f" 📋 Transactions — {app.period_label} · {app.scope_label()}"
         if self.search:
             title += f' · search "{self.search}"'
         self.query_one("#txn-title", Label).update(title)
         self.query_one("#txn-footer", Label).update(
             f"  Page {self.page}/{self.total_pages} · {total} total · "
-            "c category · x transfer · / search · PgUp/PgDn pages · ←/→ months"
+            "c category · x transfer · / search · a/f/m/j scope · PgUp/PgDn pages · ←/→ months"
         )
 
     def _selected(self) -> Optional[TransactionRecord]:
@@ -160,10 +163,22 @@ class TransactionsScreen(Screen):
             self.page += 1
             self._load_data()
 
-    def action_cycle_account(self) -> None:
-        self.notify(f"Showing {self.app.cycle_account()}")
+    def _change_scope(self, message: str) -> None:
+        self.notify(message)
         self.page = 1
         self._load_data()
+
+    def action_cycle_account(self) -> None:
+        self._change_scope(f"Showing {self.app.cycle_account()}")
+
+    def action_cycle_family(self) -> None:
+        self._change_scope(f"Showing {self.app.cycle_family()}")
+
+    def action_cycle_member(self) -> None:
+        self._change_scope(f"Showing {self.app.cycle_member()}")
+
+    def action_toggle_joint(self) -> None:
+        self._change_scope(self.app.toggle_joint())
 
     def action_refresh(self) -> None:
         self._load_data()

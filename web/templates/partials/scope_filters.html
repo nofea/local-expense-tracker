@@ -1,0 +1,32 @@
+{# Family / member / include-joint pickers (app_spec.md §2.4, §7.1).
+   Included inside a GET form on the dashboard and the transaction list.
+   Changing the family clears the member, since the member list narrows. #}
+{% if families %}
+<div class="form-group" style="max-width:180px;">
+    <label for="family-filter">Family</label>
+    <select name="family_id" id="family-filter"
+            onchange="this.form.member_id && (this.form.member_id.value = ''); {{ 'this.form.submit()' if autosubmit }}">
+        <option value="">All families</option>
+        {% for f in families %}
+        <option value="{{ f.id }}" {% if family_id == f.id %}selected{% endif %}>{{ f.name }}</option>
+        {% endfor %}
+    </select>
+</div>
+<div class="form-group" style="max-width:180px;">
+    <label for="member-filter">Member</label>
+    <select name="member_id" id="member-filter" {% if autosubmit %}onchange="this.form.submit()"{% endif %}>
+        <option value="">All members</option>
+        {% for mem in members %}
+        <option value="{{ mem.id }}" {% if member_id == mem.id %}selected{% endif %}>
+            {{ mem.name }}{% if not family_id %} ({{ mem.family_name }}){% endif %}
+        </option>
+        {% endfor %}
+    </select>
+</div>
+<label class="checkbox-label" style="color:var(--text-secondary); align-self:flex-end; margin-bottom:0.6rem;"
+       title="Also show accounts this member holds jointly, in full">
+    <input type="checkbox" name="include_joint" value="1" {% if include_joint %}checked{% endif %}
+           {% if autosubmit %}onchange="this.form.submit()"{% endif %}>
+    Include joint accounts
+</label>
+{% endif %}

@@ -17,11 +17,13 @@ from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 
 from core import database as db
 from core import csv_import, jobs, staging, validator
 from core.analytics import (
     get_category_breakdown,
+    get_member_summaries,
     get_monthly_summary,
     get_monthly_trend,
     get_uncategorized_count,
@@ -145,14 +147,22 @@ async def dashboard(
     year: Optional[int] = None,
     month: Optional[int] = None,
     account_id: Optional[str] = None,
+    family_id: Optional[str] = None,
+    member_id: Optional[str] = None,
+    include_joint: Optional[str] = None,
 ):
     y, m = _valid_month(year, month)
-    account = _account_param(account_id)
-    summary = get_monthly_summary(y, m, account_id=account)
-    breakdown = get_category_breakdown(y, m, account_id=account)
-    trend = get_monthly_trend(6, account_id=account)
-    uncategorized = get_uncategorized_count(y, m, account_id=account)
-    top_merchants = get_top_merchants(y, m, account_id=account)
+    scope = _scope_params(account_id, family_id, member_id, include_joint)
+    summary = get_monthly_summary(y, m, **scope)
+    breakdown = get_category_breakdown(y, m, **scope)
+    trend = get_monthly_trend(6, **scope)
+    uncategorized = get_uncategorized_count(y, m, **scope)
+    top_merchants = get_top_merchants(y, m, **scope)
+    member_rows = (
+        get_member_summaries(y, m, scope["family_id"], account_id=scope["account_id"])
+        if scope["family_id"] is not None and scope["member_id"] is None
+        else None
+    )
 
     return templates.TemplateResponse(
         request=request,
@@ -168,7 +178,9 @@ async def dashboard(
             "month": m,
             "month_name": datetime(y, m, 1).strftime("%B %Y"),
             "accounts": db.list_accounts(),
-            "account_id": account,
+            "account_id": scope["account_id"],
+            "member_rows": member_rows,
+            **_scope_context(scope),
         },
     )
 
@@ -643,6 +655,9 @@ async def transactions_page(
     uncategorized: bool = False,
     transfers: str = "show",
     account_id: Optional[str] = None,
+    family_id: Optional[str] = None,
+    member_id: Optional[str] = None,
+    include_joint: Optional[str] = None,
     page: int = 1,
 ):
     per_page = 30
@@ -655,7 +670,8 @@ async def transactions_page(
 
     filters = dict(
         year=year, month=month, category=category, search=search,
-        uncategorized=uncategorized, transfers=transfers, account_id=_account_param(account_id),
+        uncategorized=uncategorized, transfers=transfers,
+        **_scope_params(account_id, family_id, member_id, include_joint),
     )
     txns = db.get_transactions(**filters, limit=per_page, offset=offset)
     total = db.get_transaction_count(**filters)
@@ -688,6 +704,7 @@ async def transactions_page(
             "filter_account": filters["account_id"],
             "accounts": db.list_accounts(),
             "filter_qs": filter_qs,
+            **_scope_context(filters),
         },
     )
 
@@ -824,6 +841,108 @@ async def delete_csv_mapping_route(request: Request, mapping_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Routes — Families (app_spec.md §2.4, §7.1)
+# ---------------------------------------------------------------------------
+
+def _families_context(message: Optional[str] = None, error: Optional[str] = None) -> dict:
+    overview = db.list_families()
+    return {
+        "families": overview["families"],
+        "unlinked": overview["unlinked"],
+        "message": message,
+        "error": error,
+    }
+
+
+def _families_body(
+    request: Request, *, message: Optional[str] = None, error: Optional[str] = None
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/families_body.html",
+        context={"request": request, **_families_context(message, error)},
+    )
+
+
+def _families_action(request: Request, action, message: str) -> HTMLResponse:
+    """Run a db change and re-render the families fragment with its result."""
+    try:
+        action()
+    except db.FamilyError as exc:
+        return _families_body(request, error=str(exc))
+    return _families_body(request, message=message)
+
+
+def _form_id(value: Optional[str]) -> Optional[int]:
+    try:
+        return int(value) if value else None
+    except ValueError:
+        return None
+
+
+@app.get("/families", response_class=HTMLResponse)
+async def families_page(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="families.html",
+        context={"request": request, **_families_context()},
+    )
+
+
+@app.post("/families", response_class=HTMLResponse)
+async def create_family_route(request: Request, name: str = Form("")):
+    return _families_action(
+        request, lambda: db.create_family(name), f"Family '{' '.join(name.split())}' created."
+    )
+
+
+@app.post("/families/{family_id}", response_class=HTMLResponse)
+async def rename_family_route(request: Request, family_id: int, name: str = Form("")):
+    return _families_action(request, lambda: db.rename_family(family_id, name), "Family renamed.")
+
+
+@app.delete("/families/{family_id}", response_class=HTMLResponse)
+async def delete_family_route(request: Request, family_id: int):
+    return _families_action(request, lambda: db.delete_family(family_id), "Family deleted.")
+
+
+@app.post("/families/{family_id}/members", response_class=HTMLResponse)
+async def create_member_route(request: Request, family_id: int, name: str = Form("")):
+    return _families_action(
+        request, lambda: db.create_member(family_id, name), f"Member '{' '.join(name.split())}' added."
+    )
+
+
+@app.post("/members/{member_id}", response_class=HTMLResponse)
+async def update_member_route(
+    request: Request, member_id: int, name: str = Form(""), family_id: int = Form(...)
+):
+    return _families_action(
+        request, lambda: db.update_member(member_id, name=name, family_id=family_id), "Member saved."
+    )
+
+
+@app.delete("/members/{member_id}", response_class=HTMLResponse)
+async def delete_member_route(request: Request, member_id: int):
+    return _families_action(request, lambda: db.delete_member(member_id), "Member deleted.")
+
+
+@app.post("/accounts/{account_id}/holders", response_class=HTMLResponse)
+async def set_holders_route(
+    request: Request,
+    account_id: int,
+    primary_member_id: Optional[str] = Form(None),
+    joint_member_ids: list[str] = Form([]),
+):
+    joint = [m for m in (_form_id(v) for v in joint_member_ids) if m is not None]
+    return _families_action(
+        request,
+        lambda: db.set_account_holders(account_id, _form_id(primary_member_id), joint),
+        "Account holders saved.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Routes — Rules
 # ---------------------------------------------------------------------------
 
@@ -847,6 +966,52 @@ def _account_param(account_id: Optional[str]) -> Optional[int]:
     except ValueError:
         return None
     return wanted if any(a["id"] == wanted for a in db.list_accounts()) else None
+
+
+def _id_param(value: Optional[str], valid: list[int]) -> Optional[int]:
+    """An id from a query string; non-numeric, unknown or blank = None."""
+    try:
+        wanted = int(value) if value else None
+    except ValueError:
+        return None
+    return wanted if wanted in valid else None
+
+
+def _scope_params(
+    account_id: Optional[str],
+    family_id: Optional[str],
+    member_id: Optional[str],
+    include_joint: Optional[str],
+) -> dict:
+    """The §2.4 scope filters from a query string, validated (§7.1): bad
+    values are ignored, and include_joint only counts with a member."""
+    member = _id_param(member_id, [r["id"] for r in db.list_members()])
+    return {
+        "account_id": _account_param(account_id),
+        "family_id": _id_param(family_id, [f["id"] for f in db.list_families()["families"]]),
+        "member_id": member,
+        "include_joint": member is not None and include_joint == "1",
+    }
+
+
+def _scope_context(scope: dict) -> dict:
+    """Template context for the family/member pickers, plus ``scope_qs``:
+    the family, member and include-joint filters as a query-string suffix
+    for links that keep the scope (month navigation, uncategorized link)."""
+    qs = urlencode({
+        k: (1 if v is True else v)
+        for k, v in scope.items()
+        if k in ("account_id", "family_id", "member_id", "include_joint") and v not in (None, False)
+    })
+    return {
+        "families": db.list_families()["families"],
+        "members": db.list_members(scope["family_id"]),
+        "family_id": scope["family_id"],
+        "member_id": scope["member_id"],
+        "include_joint": scope["include_joint"],
+        # Only integer ids and "1", so it needs no HTML escaping.
+        "scope_qs": Markup(f"&{qs}") if qs else "",
+    }
 
 
 @app.get("/rules", response_class=HTMLResponse)

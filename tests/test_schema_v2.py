@@ -87,7 +87,7 @@ class TestFreshSchema(_TempDB):
     def test_init_is_idempotent(self):
         db.init_db(self.path)
         db.init_db(self.path)
-        self.assertEqual(self.q("PRAGMA user_version")[0][0], 2)
+        self.assertEqual(self.q("PRAGMA user_version")[0][0], 3)
 
     def test_unknown_version_is_refused(self):
         conn = sqlite3.connect(self.path)
@@ -138,7 +138,8 @@ class TestMigrationV1ToV2(_TempDB):
         self._make_v1()
         report = db.init_db(self.path)
 
-        self.assertEqual(self.q("PRAGMA user_version")[0][0], 2)
+        # v1 → v2 (Appendix B) then v2 → v3 (Appendix C).
+        self.assertEqual(self.q("PRAGMA user_version")[0][0], 3)
         self.assertEqual(report.statements_created, 2)
         self.assertEqual(report.rows_dropped_zero_amount, 1)
         self.assertEqual(report.rows_merged, 1)

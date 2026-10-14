@@ -1,8 +1,8 @@
 # Technical Specification: Privacy-First Local Expense Tracker
 
-**Version 2.** This document describes what the application does, how its parts fit together and why they are built the way they are. It is written for someone who has never seen the code or the app. Read it top to bottom once; after that, each numbered section stands on its own and other sections refer to it as "§N".
+**Version 3.** This document describes what the application does, how its parts fit together and why they are built the way they are. It is written for someone who has never seen the code or the app. Read it top to bottom once; after that, each numbered section stands on its own and other sections refer to it as "§N".
 
-**Status.** The code implements everything in this version (checked against commit `ffcef6b`). Appendix A records how the current code got here, and lists the known limitations that remain. Appendix B describes the one-time upgrade of databases created by the first version of the app.
+**Status.** The code implements everything in this version. Version 3 added **families and family members**: the `families`, `members` and `account_members` tables (§2.2), scopes with primary and joint holders (§2.4), the Families page and scope filters (§7.1), the TUI's `f`/`m`/`j` keys (§7.2), the family view (§8.1) and the v2 → v3 migration (Appendix C). Each v3 addition is marked *(v3)* where it appears. Appendix A records how the current code got here, and lists the known limitations that remain. Appendix B describes the one-time upgrade of databases created by the first version of the app, and Appendix C the upgrade from version 2 to version 3.
 
 ---
 
@@ -22,12 +22,13 @@
 11. [Testing & acceptance criteria](#11-testing--acceptance-criteria)
 - [Appendix A: Implementation history & known limitations](#appendix-a-implementation-history--known-limitations)
 - [Appendix B: Migration v1 → v2](#appendix-b-migration-v1--v2)
+- [Appendix C: Migration v2 → v3](#appendix-c-migration-v2--v3)
 
 ---
 
 ## 0. What the app is
 
-The app turns bank and credit-card statements into a searchable, categorized ledger of transactions, and shows monthly summaries of income and spending. It is built for a single person who does not want their financial data to leave their computer.
+The app turns bank and credit-card statements into a searchable, categorized ledger of transactions, and shows monthly summaries of income and spending. It is built for one person, on one computer, who manages their own money and optionally their family's, and who does not want any of that data to leave the machine. Family members are labels for grouping accounts, not users: there are no logins (§10).
 
 A typical session looks like this:
 
@@ -37,6 +38,7 @@ A typical session looks like this:
 4. The app shows the extracted rows on a **review** screen, with anything suspicious highlighted. The user fixes or drops rows, then **commits** them.
 5. Committed rows enter the **ledger**. User-defined **rules** assign them categories ("SWIGGY" → Food).
 6. The dashboard (in the browser, or in a terminal UI) shows income, expenses, net savings and a spending breakdown for any month.
+7. Optionally *(v3)*, the user creates a **family** (for example "The Sharmas"), adds its **members** ("Asha", "Ravi") and links each account or credit card to its **primary holder** and any **joint holders**. The dashboard and transaction list can then show the whole family's income and spending, or one member's (§2.4, §8.1).
 
 ### 0.1 Principles
 
@@ -58,10 +60,15 @@ These four rules drive most of the design decisions in this document.
 | **Ledger** | The `transactions` table: rows the user has committed. All analytics read from it. |
 | **Commit** | The user's action that moves a statement's reviewed rows into the ledger. |
 | **Minor units** | The smallest unit of the currency. For Indian rupees (the default), 1 rupee = 100 paise, so ₹12.50 is stored as `1250`. |
-| **Transfer** | Money moving between the user's own accounts, e.g. paying a credit-card bill from a savings account. Transfers are neither income nor expense, so analytics ignore them. |
+| **Transfer** | Money moving between the user's own accounts, e.g. paying a credit-card bill from a savings account. Transfers are neither income nor expense, so analytics ignore them. *(v3)* Money moving between two **different** family members is not a transfer: it is an expense for the sender and income for the receiver (§8.1). |
 | **Rule** | A user-defined "if the description contains X, the category is Y" instruction (§6). |
 | **CSV mapping** | A saved description of a bank's CSV layout (which column holds the date, which the amount, and so on), so later files with the same layout can be read without the LLM (§3.2). |
 | **Chunk** | A slice of a statement's text small enough to send to the LLM in one request (§3.3). |
+| **Family** *(v3)* | A named group of members, e.g. "The Sharmas". The app can hold several families. |
+| **Member** *(v3)* | A named person in exactly one family, e.g. "Asha". A member can hold any number of accounts, and an account can have several holders (a joint account or an add-on card), all in the same family. Members are not logins. |
+| **Primary holder** *(v3)* | The one member an account's income and spending are attributed to. In India only the primary holder is taxed on an account's income. For a credit card, the primary cardholder. |
+| **Joint holder** *(v3)* | Any other holder of an account; for a credit card, an add-on cardholder. Recorded, but not attributed any share. |
+| **Scope** *(v3)* | The set of accounts a view covers: all accounts, one family's, one member's (as primary holder, optionally also as joint holder), or a single account (§2.4). |
 | **Ollama** | A program that runs open-weight LLMs locally and serves them over HTTP. The app talks to it at `http://localhost:11434` by default. |
 
 ---
@@ -85,8 +92,8 @@ The code is split into three layers. `core/` contains all of the logic and all d
 ```
 core/
   config.py         Settings from config.toml (§1.2)
-  database.py       Connections, accounts, ledger queries, rules engine (§2, §6)
-  migrations.py     Schema creation and the v1 → v2 upgrade (§2, Appendix B)
+  database.py       Connections, accounts, families and members, ledger queries, rules engine (§2, §6)
+  migrations.py     Schema creation and the v1 → v2 → v3 upgrades (§2, Appendices B and C)
   models.py         Pydantic models, money conversion, transaction ids (§2, §5)
   jobs.py           Background worker that runs imports (§3)
   ingestion.py      Text extraction from PDF/CSV, chunking, LLM orchestration (§3.2, §3.3)
@@ -172,7 +179,7 @@ Rules:
   * **Positive** = money into a bank account, or a credit card's balance owed going down.
   * So a credit-card purchase is negative, a refund to the card is positive, and a payment to the card is positive **and** is a transfer (the money came from the user's own bank account).
 * **Dates** are ISO `YYYY-MM-DD` text. A statement may print two dates per row: the *transaction date* (when it happened) and the *value date* (when the bank settled it). **Every month-based figure uses `transaction_date`**; `value_date` is stored for information only.
-* **Schema versioning.** The schema version is stored in SQLite's `PRAGMA user_version`. On every startup, `database.init_db()` calls `migrations.migrate()`, which creates the current schema in an empty file, upgrades a version-0 (v1) file per Appendix B, does nothing for a current file, and refuses to start for any other version. Schema statements run one by one inside an explicit transaction (never with `executescript`, which would commit part-way through).
+* **Schema versioning.** The schema version is stored in SQLite's `PRAGMA user_version`. On every startup, `database.init_db()` calls `migrations.migrate()`, which creates the current schema (version 3) in an empty file, upgrades a version-0 (v1) file per Appendix B and then Appendix C, upgrades a version-2 file per Appendix C, does nothing for a current file, and refuses to start for any other version. Schema statements run one by one inside an explicit transaction (never with `executescript`, which would commit part-way through).
 * **Connections.** Every connection, including the read-only analytics queries, is opened by `database.connect()`. It sets `journal_mode=WAL` (readers don't block the writer), `foreign_keys=ON` (SQLite enforces references only when asked) and `busy_timeout=5000` (wait up to 5 s for a lock instead of failing at once). Every database function accepts an optional `db_path` argument, so tests can use a separate file.
 * **Write ordering.** Any write that depends on a status check (for example "commit only if the statement is still in review") runs inside `BEGIN IMMEDIATE`, which takes the write lock before the check. This stops two browser tabs from committing the same statement twice.
 
@@ -274,6 +281,35 @@ CREATE TABLE csv_mappings (
     UNIQUE (account_id, header_signature),
     CHECK ((amount_col IS NOT NULL) OR (debit_col IS NOT NULL AND credit_col IS NOT NULL))
 );
+
+-- (v3) A named group of members (§2.4).
+CREATE TABLE families (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL UNIQUE                       -- e.g. "The Sharmas"
+);
+
+-- (v3) A person in exactly one family. Not a login.
+CREATE TABLE members (
+    id         INTEGER PRIMARY KEY,
+    family_id  INTEGER NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,                        -- e.g. "Asha"
+    UNIQUE (family_id, name)
+);
+
+-- (v3) Which members hold which accounts. Many-to-many: a joint account or an
+-- add-on card links to several members, and a member to several accounts.
+-- Each linked account has exactly one primary holder; the others are joint
+-- holders (add-on cardholders, for a credit card). The partial unique index
+-- allows at most one primary; "at least one primary" and "all holders in one
+-- family" are enforced by core/database.py (§2.4).
+CREATE TABLE account_members (
+    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    member_id  INTEGER NOT NULL REFERENCES members(id)  ON DELETE CASCADE,
+    role       TEXT NOT NULL CHECK (role IN ('primary', 'joint')),
+    PRIMARY KEY (account_id, member_id)
+);
+CREATE INDEX idx_account_members_member ON account_members(member_id);
+CREATE UNIQUE INDEX idx_account_one_primary ON account_members(account_id) WHERE role = 'primary';
 ```
 
 Notes on the tables:
@@ -284,6 +320,7 @@ Notes on the tables:
 * **`raw_description` is the matching key; `cleaned_merchant` is for display.** Rules always match on the description as printed on the statement. A friendlier merchant name (e.g. "Swiggy" for `UPI-SWIGGY-8812`) is shown when set but is never matched against.
 * **Cascades.** Deleting a statement deletes its staged rows and its transactions (`ON DELETE CASCADE`). Deleting a rule leaves the transactions it categorized in place, with `rule_id` set to NULL, until the rules engine runs again (§6).
 * Queries for the transaction list join `statements` so each row can show the name of the file it came from.
+* *(v3)* **Ownership lives on accounts, not transactions.** Every transaction on an account is attributed to the account's **primary holder**; joint holders are recorded but get no share, and there is no per-transaction attribution. This follows Indian tax practice, where only the primary holder is taxed on an account's income. An account may have no holders (it then appears only in the "all accounts" and single-account scopes). All holders of an account belong to **one family**, so an account never counts in two families. Deleting an account removes its holder links; deleting a member or a family never touches the ledger (§2.4).
 
 ### 2.3 Statement lifecycle
 
@@ -310,6 +347,41 @@ A statement's `status` moves through these states:
 
 A `failed` or `discarded` statement does not block uploading the same file again: the new upload replaces it (§3.1).
 
+### 2.4 Families, members & scope *(v3)*
+
+Families and members exist only to group accounts, so that the dashboards and the transaction list can show a household's or one person's figures. They never change the ledger.
+
+**Names.** Family and member names are trimmed and must not be blank. Family names are unique; member names are unique within their family (two families may each have an "Asha").
+
+**Holders.** An account is linked to members as one **primary** holder and any number of **joint** holders. These rules always hold, and every write that could break them is refused with a `FamilyError` (inside `_write_tx`, so the check and the write are atomic):
+
+* An account with any holders has **exactly one** primary holder. (The schema's partial unique index also rejects a second primary.)
+* All holders of an account are members of the **same family**.
+* A member holds a given account at most once, in one role.
+
+**Scope.** Every view that filters the ledger (§7, §8) takes three optional filters, `family_id`, `member_id` and `account_id`, plus an `include_joint` option that only matters when a member is selected. Each filter resolves to a set of account ids:
+
+| Filter | Accounts |
+|---|---|
+| none | every account |
+| family F | the accounts whose holders are members of F. Because an account's holders are all in one family, two families' sets never overlap. |
+| member M | the accounts where M is the **primary** holder |
+| member M, `include_joint` | every account M holds, as primary or joint holder |
+| account A | {A} |
+
+When several filters are given, the scope is the **intersection** of their sets. A member outside the selected family, an account the selected member doesn't hold (in the chosen role), or a family with no linked accounts therefore gives an empty scope. An empty scope shows zero figures and an empty list; it is never an error.
+
+Queries apply the scope as `account_id IN (<subquery over account_members/members>)`, never by joining `account_members` to `transactions`, so each transaction is counted **once** per scope however many holders its account has.
+
+**Lifecycle.**
+
+* Holders are edited **per account**, as the complete set at once: `set_account_holders(account_id, primary_member_id, joint_member_ids)`, in one transaction. A primary of `None` with no joint holders unlinks the account; joint holders without a primary are refused. Making a joint holder primary is the same call with the new primary and joint lists.
+* Deleting a member who is only a joint holder, or the sole holder, of their accounts removes those links. Deleting a member who is the **primary holder of an account that still has joint holders is refused** ("Make another holder primary first"), because the account would be left without a primary. The accounts and their transactions always stay.
+* A member can be renamed, or moved to another family. A move is **refused while the member shares any account with other holders**, because the account would then span two families; an account held by the member alone moves with them.
+* Deleting a family deletes its members and their links (`ON DELETE CASCADE`), after a confirmation that names the number of members. Since all holders of an account are in one family, no account is left half-linked. The ledger is untouched.
+
+**Database API** (`core/database.py`): `create_family`, `rename_family`, `delete_family`, `create_member`, `update_member` (rename and/or move to another family), `delete_member`, `set_account_holders(account_id, primary_member_id, joint_member_ids)` `list_families()`, which returns `{"families": [...], "unlinked": [...]}`: each family with its members (each with their accounts and roles) and its accounts (each with its primary and joint holders), plus the accounts with no holders; and `list_members(family_id=None)`. The SQL for a scope comes from `scope_sql`. Like the account functions, they raise `FamilyError` with a message fit to show the user (blank or duplicate name, unknown family, member or account, or a broken holder rule above).
+
 ---
 
 ## 3. Ingestion Pipeline
@@ -323,7 +395,7 @@ Ingestion is everything from "the user picks a file" to "rows are waiting on the
 1. **The form.** The user picks an existing account *or* types the name (and type) of a new one, chooses a `.pdf` or `.csv` file, chooses an Ollama model (the list comes from Ollama; the configured `llm.model` is pre-selected), and may enter a PDF password.
 2. **File checks.** The client-supplied filename is used only as display text. It is reduced to its last path component (backslashes count as separators), stripped of control characters, truncated to 255 characters, and replaced by `upload` if nothing is left. Its extension must be `.pdf` or `.csv`. For a PDF, Ollama must be reachable, or the upload is refused right away. (A CSV may not need the LLM, so that check happens later.)
 3. **Storage.** The file is streamed to disk under a generated name (`statement-XXXX.pdf`) in a private `tmp/` directory next to the database (created with mode `0700`). Its SHA-256 hash is computed while it is written. If it grows beyond **20 MB**, the upload is stopped and the partial file deleted.
-4. **Account.** A new account name wins (an existing account with exactly that name is reused). Otherwise the selected account id is used, and it must still exist. With neither, the account named `Default` is used, and created if needed.
+4. **Account.** A new account name wins (an existing account with exactly that name is reused). Otherwise the selected account id is used, and it must still exist. With neither, the account named `Default` is used, and created if needed. *(v3)* An account created here has no members; the user links it on the Families page (§7.1).
 5. **CSV mapping lookup.** For a CSV, the app looks for a saved mapping for this account whose header signature matches the file (§3.2). With no match, the upload returns the **CSV mapping form** instead of starting a job, and the file waits in `tmp/` until the user decides.
 6. **Duplicate check.** If the same account already has a statement with the same `file_sha256` that is `queued`, `needs_password`, `extracting`, `review` or `committed`, the upload is refused with a message linking to that statement, and the file is deleted. A previous `failed` or `discarded` statement for the same bytes is deleted and replaced. (For an unmapped CSV this check happens before the mapping form is shown, so the user doesn't map a file they can't import.)
 7. **Ollama check.** If the LLM will be used (a PDF, or a CSV without a mapping), Ollama must be reachable.
@@ -526,7 +598,7 @@ Rules for code that inserts transactions:
 * its `pattern`, case-folded (Python `str.casefold()`), is a substring of the transaction's case-folded `raw_description` — this is plain text matching, so characters like `%` and `_` have no special meaning; and
 * the rule's `account_id` is NULL (all accounts) or equals the transaction's account.
 
-A rule with a blank pattern never matches.
+A rule with a blank pattern never matches. *(v3)* Rules cannot be scoped to a family or a member, only to one account or to all accounts (A.2).
 
 **The rules engine** (`database._run_rules_engine`) runs after every commit, after a rule is created, updated or deleted, after "Reset to rules" on a transaction, and when the user clicks "Re-apply all rules". It looks at every transaction in the ledger whose `category_source` is not `manual`:
 
@@ -558,7 +630,8 @@ Pages are rendered on the server with Jinja2. Interactive actions use HTMX: a bu
 
 General behaviour:
 
-* **Query parameters never cause a server error.** On the dashboard, a missing or out-of-range `year`/`month` falls back to the current month. On the transaction list, an out-of-range month is ignored (all months of the year are shown). An unknown or blank `account_id` means "all accounts".
+* **Query parameters never cause a server error.** On the dashboard, a missing or out-of-range `year`/`month` falls back to the current month. On the transaction list, an out-of-range month is ignored (all months of the year are shown). An unknown or blank `account_id` means "all accounts". *(v3)* Likewise a non-numeric, unknown or blank `family_id` or `member_id` is ignored.
+* *(v3)* **Scope filters.** The dashboard and the transaction list take `family_id`, `member_id`, `include_joint` and `account_id` (§2.4), shown as three pickers and an "Include joint accounts" checkbox next to the member picker. Choosing a family narrows the member picker to that family's members. `include_joint=1` turns the option on; any other value, or no member selected, leaves it off. The filters are kept when changing month, when paging (they go into the route's `filter_qs`), and in the dashboard's uncategorized link.
 * **Money** is formatted with `[money]` from the configuration, e.g. `−₹450.50`; positive amounts in the ledger are shown with a `+`.
 * **Ollama status badge.** The sidebar shows whether Ollama is reachable. It re-checks every 10 seconds (and on click) through `GET /api/ollama-status`. Ordinary page renders reuse a result cached for 3 seconds so they never wait on Ollama.
 * A **warning banner** appears on every page when `llm.host` is not local (§9.7).
@@ -566,21 +639,22 @@ General behaviour:
 
 | Page | Features |
 |---|---|
-| **Dashboard** (`/`) | Previous/next month navigation, and an account filter (kept when changing month). Cards for income, expenses and net savings, all excluding transfers. The **uncategorized count** for the month, linking to the transaction list filtered to those rows. Spending by category with each category's % of expenses (SVG chart and table). Income vs. expenses for the 6 calendar months ending with the **current** month (SVG chart). The top 10 merchants by spending. Definitions in §8. |
+| **Dashboard** (`/`) | Previous/next month navigation, and the account filter plus *(v3)* the family and member filters (kept when changing month). *(v3)* When a family is selected and no member, a **per-member table** shows each member's income, expenses and net savings for the month as primary holder, and how many accounts they hold jointly (§8.1). Its rows add up exactly to the family total. Cards for income, expenses and net savings, all excluding transfers. The **uncategorized count** for the month, linking to the transaction list filtered to those rows. Spending by category with each category's % of expenses (SVG chart and table). Income vs. expenses for the 6 calendar months ending with the **current** month (SVG chart). The top 10 merchants by spending. Definitions in §8. |
 | **Upload** (`/upload`) | Account picker or new-account fields, file chooser (`.pdf`, `.csv`), optional PDF password, model picker, then the live job progress or the CSV mapping form (§3.1, §3.2). The model list and Ollama status come from Ollama. |
 | **Imports** (`/imports`) | §3.6. |
 | **Review** (`/imports/{id}`) | §3.5. |
-| **Transactions** (`/transactions`) | Filters: year, month, account, category, free-text search (a substring of the description or merchant name), "uncategorized only", and transfers shown / hidden / only. 30 rows per page, newest first; the page links keep the filters. Each row shows a "manual" or "transfer" marker where relevant and can be: **edited in place** (category, with existing categories suggested; merchant name; transfer flag), which makes it manual (§6); **reset to rules**; or **deleted** after a confirmation. The edit row also has the "Create rule…" link. |
-| **Accounts** (`/accounts`) | Create accounts (name, bank or credit card, optional institution); rename or change them in place; delete them. Deletion is refused while the account has any imports (delete those first), or rules scoped to it (deleting a scoped rule silently widening it to all accounts would recategorize other rows). Deleting an account also deletes its CSV mappings. The page also lists every saved CSV mapping with its columns, and each can be deleted; the next file with that header will then ask for a mapping again. |
+| **Transactions** (`/transactions`) | Filters: year, month, account, *(v3)* family, member, category, free-text search (a substring of the description or merchant name), "uncategorized only", and transfers shown / hidden / only. 30 rows per page, newest first; the page links keep the filters. Each row shows a "manual" or "transfer" marker where relevant and can be: **edited in place** (category, with existing categories suggested; merchant name; transfer flag), which makes it manual (§6); **reset to rules**; or **deleted** after a confirmation. The edit row also has the "Create rule…" link. |
+| **Accounts** (`/accounts`) | Create accounts (name, bank or credit card, optional institution); rename or change them in place; delete them. Deletion is refused while the account has any imports (delete those first), or rules scoped to it (deleting a scoped rule silently widening it to all accounts would recategorize other rows). Deleting an account also deletes its CSV mappings and *(v3)* its member links. *(v3)* Each account shows its holders and their roles, e.g. "Asha (primary), Ravi (joint)" (read-only; holders are edited on the Families page). The page also lists every saved CSV mapping with its columns, and each can be deleted; the next file with that header will then ask for a mapping again. |
+| **Families** (`/families`) *(v3)* | Linked from the sidebar. Create, rename and delete families (delete asks for confirmation and names the member count, §2.4). Within a family: add members, rename them, move them to another family, and delete them (§2.4 says when a move or delete is refused). Each family also has an **accounts table**: every account its members hold, with a primary-holder picker and joint-holder checkboxes listing that family's members, saved per account (`set_account_holders`). Accounts with no holders are listed at the bottom as "Not linked to anyone", each with a family and primary-holder picker to link it. Every action is an HTMX request that returns the re-rendered family fragment; `FamilyError` messages are shown inline. |
 | **Rules** (`/rules`) | The rule list (pattern, category, merchant, priority, account scope, transfer flag), the rule form with its live match count (§6), delete (which re-runs the engine), and "Re-apply all rules", which reports how many rows changed. |
 
 ### 7.2 Terminal UI (Textual)
 
 Started with `python -m tui.app`. It reads and edits the same database through `core`. Uploading and reviewing statements are web-only, as are deleting transactions and "Reset to rules".
 
-It has two screens. The selected month and account filter belong to the app, so both screens always show the same period and account.
+It has two screens. The selected month and the scope filters (account, and *(v3)* family, member and include-joint) belong to the app, so both screens always show the same period and scope. The scope is applied as in §2.4 and shown as a label in each screen's header (e.g. "The Sharmas · Asha (+ joint) · All accounts"). Creating and editing families and members is web-only.
 
-* **Dashboard:** income, expenses and net savings for the selected month, the uncategorized count, and spending by category as text bars with percentages. These are the same figures the web dashboard shows for that month and account (§8). The trend chart and top merchants are web-only.
+* **Dashboard:** income, expenses and net savings for the selected month, the uncategorized count, and spending by category as text bars with percentages. These are the same figures the web dashboard shows for that month and scope (§8). The per-member table (§8.1) is web-only, like the trend chart and top merchants.
 * **Transactions:** a table of the month's transactions (date, merchant name or description, category, manual/transfer flags, amount, source file), 50 per page.
 
 | Key | Action |
@@ -591,26 +665,37 @@ It has two screens. The selected month and account filter belong to the app, so 
 | `/` | Search descriptions; an empty search clears it (Transactions) |
 | `Esc` | Clear the search (Transactions) |
 | `a` | Cycle the account filter: all accounts → each account by name → all (both screens) |
+| `f` | *(v3)* Cycle the family filter: all families → each family by name → all; also resets the member filter and turns include-joint off (both screens) |
+| `m` | *(v3)* Cycle the member filter: all members → each member of the selected family (or of every family, by family then name, when none is selected) → all (both screens) |
+| `j` | *(v3)* Toggle "include joint accounts" for the selected member (both screens; no effect without a member) |
 | `c` | Set the category of the selected row; it becomes manual (Transactions) |
 | `x` | Toggle the transfer flag of the selected row; it becomes manual (Transactions) |
 | `r` | Refresh (both screens) |
 
 Two implementation constraints, both caused by how Textual routes keys:
 
-* `d`, `t` and `q` are ordinary app bindings, **not** priority bindings. Otherwise they would be captured while the user types a search term or a category into the text prompt.
+* `d`, `t`, `q` and *(v3)* `f`, `m` and `j` are ordinary bindings, **not** priority bindings. Otherwise they would be captured while the user types a search term or a category into the text prompt.
 * `←`, `→`, `PgUp` and `PgDn` **are** priority bindings on the Transactions screen. Otherwise the focused table would consume them to move its cursor.
 
 ---
 
 ## 8. Analytics
 
-All figures are for one calendar month, selected by `transaction_date LIKE 'YYYY-MM-%'`, optionally for one account. They **always exclude transfers** (`is_transfer = 1`). Sums are computed on integer minor units and converted for display only at the end.
+All figures are for one calendar month, selected by `transaction_date LIKE 'YYYY-MM-%'`, and for one scope (§2.4): all accounts, or the accounts selected by the account and *(v3)* family, member and include-joint filters. They **always exclude transfers** (`is_transfer = 1`). Sums are computed on integer minor units and converted for display only at the end.
 
 * **Income** = the sum of positive amounts. **Expenses** = the absolute value of the sum of negative amounts. **Net savings** = income − expenses.
 * **Category breakdown:** expenses per category, largest first, and each category's percentage of total expenses, rounded to one decimal place. Percentages add up to 100, give or take rounding. Income is not broken down.
 * **Trend:** income and expenses for each of the last N calendar months (N = 6 on the dashboard), oldest first, computed with month arithmetic (not by subtracting 30-day blocks, which skips or repeats months). Months with no data show as zero.
 * **Top merchants:** expenses grouped by the merchant name if set, otherwise by the description, largest first, top 10.
 * **Uncategorized:** the number of non-transfer rows in the month whose category is `Uncategorized`. The transaction list's "uncategorized only" filter uses exactly the same definition, so the dashboard count and the filtered list always agree.
+
+### 8.1 Family view *(v3)*
+
+* **Family figures** are the figures above with the family's scope: every transaction on any account held by the family's members, each counted **once**, however many members hold its account.
+* **Member figures** use the member's scope: by default every transaction on the accounts where the member is the **primary holder**. With "include joint accounts", every transaction on every account they hold, in full. Transactions are never split between holders, because the app does not know who made them (§2.2).
+* **Per-member table** (dashboard, family selected, no member): one row per member of the family, in name order, with income, expenses and net savings for the month as primary holder (the default member scope), plus the number of accounts they hold jointly, for information. A member who is primary on no account shows zeros. Every linked account has exactly one primary holder in the family, so the rows **add up exactly** to the family figures.
+* **Money between members.** Money sent from an account where one member is primary holder to an account where a **different** member is primary holder (pocket money, a contribution to household expenses) is **not** a transfer. It is left unflagged and counts as an expense for the sender and income for the receiver, in every scope. In the family scope the two sides cancel out in **net savings**, but both are included in the family's income and expenses, which therefore grow by the amount moved (A.2). The user should not tick the transfer box on these rows; giving them a category such as "Family transfer" keeps them identifiable in the breakdown.
+* **Transfers** keep their usual meaning (§0.2): money between accounts with the **same** primary holder (e.g. Asha paying her own credit card from her own savings) is marked `is_transfer = 1` as before and is excluded from every scope.
 
 ---
 
@@ -635,7 +720,7 @@ Encrypting the database file is out of scope; users should rely on their operati
 * LLM backends other than Ollama.
 * Checking row dates against the statement period.
 * Database encryption.
-* Multiple users, logins or access control.
+* Multiple users, logins or access control. Family members (§2.4) are labels for grouping accounts; anyone who can open the app sees every family.
 * Cloud sync or backup.
 * Budgets and alerts.
 
@@ -657,7 +742,8 @@ Rules for every test:
 
 | Suite | Covers |
 |---|---|
-| `test_schema_v2.py` | Schema creation, the v1 → v2 migration, ids and dedup, money conversion, the rules engine |
+| `test_schema_v2.py` | Schema creation, the v1 → v2 migration, ids and dedup, money conversion, the rules engine. *(v3)* Its version assertions expect `user_version = 3`, since a v1 file now migrates all the way. |
+| `test_families.py` *(v3)* | The v2 → v3 migration, family/member CRUD and `FamilyError`, primary/joint holder rules, scope resolution, family and member analytics, the scope filters and `/families` routes, and the TUI's `f`/`m`/`j` keys |
 | `test_review_pipeline.py` | Jobs, chunking, the validator, staging, review edits, commit, discard |
 | `test_accounts_csv_pdf.py` | Accounts, CSV mappings and parsing, password-protected PDFs (with a real encrypted PDF) |
 | `test_ledger_editing.py` | Manual edits, reset to rules, deleting transactions and imports, list filters |
@@ -690,6 +776,17 @@ The acceptance criteria each area was built against:
 
 **TUI**
 - Every binding in §7.2 has an action. A `Pilot` test pages through more than 50 rows and changes a category.
+
+**Families *(v3)***
+- A fresh database is created at version 3; a v2 database migrates to v3 with its data unchanged; a v1 database migrates through v2 to v3.
+- Blank and duplicate family names, and duplicate member names within a family, raise `FamilyError`; the same member name in two families is allowed.
+- Deleting a family deletes its members and links but no transactions; deleting an account removes its links.
+- Holder rules: a second primary on one account is rejected (by the index and by `FamilyError`); joint holders without a primary are refused; a holder from another family is refused; deleting the primary holder of an account that still has joint holders is refused; moving a member who shares an account is refused.
+- A joint account (primary Asha, joint Ravi) is counted once in the family's figures, in Asha's member figures, not in Ravi's by default, and in Ravi's with `include_joint=1`. The per-member table's rows add up exactly to the family totals.
+- An unflagged payment from Asha's account to Ravi's is an expense for Asha and income for Ravi, and leaves the family's net savings unchanged.
+- Intersected filters (a member of another family, an account the member doesn't hold) give zero figures and an empty list, not an error. `?family_id=abc`, `?member_id=999` and `?include_joint=x` do not cause a server error.
+- The dashboard's uncategorized link and the transaction list's page links keep the family, member and include-joint filters, and the count matches the filtered list.
+- In the TUI, `f`, `m` and `j` change the figures on both screens, and `f` resets the member filter and include-joint.
 
 ---
 
@@ -735,6 +832,13 @@ These are current, deliberate or accepted behaviours, not bugs to fix without a 
 * **Review cannot edit a row's value date**, only the transaction date, description, amount and transfer flag. An invalid value date is cleared automatically (§4).
 * **The TUI cannot delete transactions or reset them to rules**; use the web UI.
 * **Transaction-list search uses SQL `LIKE`**, so `%` and `_` typed into the search box act as wildcards (unlike rule patterns, §6).
+* *(v3)* **Money moved between family members inflates the family's income and expenses.** By design it is an expense for the sender and income for the receiver (§8.1), so the family's net savings are right but its income and expense totals each include the amount moved. There is no "internal to the family" flag that would drop it from the family scope only.
+* *(v3)* **Joint holders get no share.** An account's income and spending go wholly to its primary holder (§8.1); splitting them between holders, for example by who contributed the money, is not modelled. "Include joint accounts" shows a member's joint accounts in full, not a share of them.
+* *(v3)* **There is no per-transaction ownership.** A transaction belongs to its account's primary holder; a purchase on an add-on card cannot be assigned to the add-on cardholder.
+* *(v3)* **An account cannot be shared across families.** All its holders are in one family (§2.4), so, for example, a joint account between an adult child in one family and a parent in another must be placed in one of them.
+* *(v3)* **Rules cannot be scoped to a family or a member**, only to one account or all accounts (§6).
+* *(v3)* **Changing an account's primary holder moves its whole history.** Ownership is not dated, so past months' member figures change too.
+* *(v3)* **Families and members cannot be managed from the TUI**, only selected as filters (§7.2).
 
 ---
 
@@ -772,4 +876,25 @@ Steps 2–7 run in one transaction.
 * **Backups are never overwritten.** If `expenses.db.v1.bak` already exists (for example after a failed attempt), a timestamped name is used instead.
 * **A failure leaves the database unchanged.** The whole migration rolls back and the file stays at v1.
 * **Fresh installs skip the migration.** An empty file gets the v2 schema directly.
-* **Unknown versions are refused.** Any `user_version` other than 0 or 2 stops startup with an error.
+* **Unknown versions are refused.** Any `user_version` other than 0, 2 or *(v3)* 3 stops startup with an error.
+* *(v3)* **The migration continues to v3.** A v1 file is upgraded to v2 as above and then to v3 per Appendix C. Step 7's `user_version = 2` is an intermediate value; the file ends at 3.
+
+---
+
+## Appendix C: Migration v2 → v3
+
+✅ Implemented in `core/migrations.py` and run automatically by `database.init_db()`. Tests are in `tests/test_families.py`.
+
+Version 3 only adds tables, so the upgrade is short:
+
+1. Create `families`, `members`, `account_members` (with its `role` column), `idx_account_members_member` and `idx_account_one_primary` exactly as in §2.2.
+2. Set `user_version = 3`.
+
+Both steps run in one transaction, statement by statement (§2.1); a failure rolls back and leaves the file at version 2.
+
+**Decisions:**
+
+* **No backup file.** No existing row is changed or deleted, so unlike Appendix B there is nothing a backup would protect.
+* **No default family.** Existing accounts start with no members. The app works exactly as in v2 until the user creates a family, and the "all accounts" scope still covers everything.
+* **Chained from v1.** A v1 file runs Appendix B's steps, then these, in order. Each upgrade is its own transaction, so a failure in this one leaves a valid v2 file (with its v1 backup).
+* **Fresh installs** get the v3 schema directly. `SCHEMA_VERSION` becomes 3, and the accepted versions are 0, 2 and 3.

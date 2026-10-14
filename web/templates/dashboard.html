@@ -13,19 +13,24 @@
     {% set prev_year = year if month > 1 else year - 1 %}
     {% set next_month = month + 1 if month < 12 else 1 %}
     {% set next_year = year if month < 12 else year + 1 %}
-    {% set acct_qs %}{% if account_id %}&account_id={{ account_id }}{% endif %}{% endset %}
-    <a href="/?year={{ prev_year }}&month={{ prev_month }}{{ acct_qs }}" class="nav-arrow" aria-label="Previous month">◀</a>
+    <a href="/?year={{ prev_year }}&month={{ prev_month }}{{ scope_qs }}" class="nav-arrow" aria-label="Previous month">◀</a>
     <span class="current-month">{{ month_name }}</span>
-    <a href="/?year={{ next_year }}&month={{ next_month }}{{ acct_qs }}" class="nav-arrow" aria-label="Next month">▶</a>
-    {% if accounts | length > 1 %}
+    <a href="/?year={{ next_year }}&month={{ next_month }}{{ scope_qs }}" class="nav-arrow" aria-label="Next month">▶</a>
+    {% if accounts | length > 1 or families %}
     <form class="filter-inline" method="get" action="/">
         <input type="hidden" name="year" value="{{ year }}">
         <input type="hidden" name="month" value="{{ month }}">
-        <label for="dash-account">Account</label>
-        <select id="dash-account" name="account_id" onchange="this.form.submit()">
-            <option value="">All accounts</option>
-            {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if a.id == account_id }}>{{ a.name }}</option>{% endfor %}
-        </select>
+        {% set autosubmit = true %}
+        {% include "partials/scope_filters.html" %}
+        {% if accounts | length > 1 %}
+        <div class="form-group" style="max-width:180px;">
+            <label for="dash-account">Account</label>
+            <select id="dash-account" name="account_id" onchange="this.form.submit()">
+                <option value="">All accounts</option>
+                {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if a.id == account_id }}>{{ a.name }}</option>{% endfor %}
+            </select>
+        </div>
+        {% endif %}
         <noscript><button type="submit" class="btn btn-ghost btn-sm">Apply</button></noscript>
     </form>
     {% endif %}
@@ -49,13 +54,51 @@
         <div class="stat-icon">💎</div>
     </div>
     <a class="card stat-card uncategorized stat-link"
-       href="/transactions?year={{ year }}&month={{ month }}&uncategorized=1{{ acct_qs }}"
+       href="/transactions?year={{ year }}&month={{ month }}&uncategorized=1{{ scope_qs }}"
        title="Show this month's uncategorized transactions">
         <div class="stat-label">Uncategorized</div>
         <div class="stat-value">{{ uncategorized }}</div>
         <div class="stat-icon">🏷️</div>
     </a>
 </div>
+
+{% if member_rows is not none %}
+<!-- Per-member table (§8.1): each account counts under its primary holder -->
+<div class="card animate-in" style="margin-bottom: 2rem;">
+    <h3 style="font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.5rem;">By Member</h3>
+    <p class="muted-line" style="margin-bottom: 1rem;">
+        Each account counts under its primary holder, so the rows add up to the family total.
+    </p>
+    {% if member_rows %}
+    <div class="table-wrapper">
+        <table id="member-table">
+            <thead>
+                <tr>
+                    <th>Member</th>
+                    <th style="text-align:right;">Income</th>
+                    <th style="text-align:right;">Expenses</th>
+                    <th style="text-align:right;">Net savings</th>
+                    <th style="text-align:right;">Joint accounts</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in member_rows %}
+                <tr>
+                    <td><a href="/?year={{ year }}&month={{ month }}&family_id={{ family_id }}&member_id={{ r.member_id }}{% if account_id %}&account_id={{ account_id }}{% endif %}">{{ r.name }}</a></td>
+                    <td style="text-align:right;">{{ r.income | currency(0) }}</td>
+                    <td style="text-align:right;">{{ r.expense | currency(0) }}</td>
+                    <td style="text-align:right;">{{ r.net | currency(0) }}</td>
+                    <td style="text-align:right;">{{ r.joint_accounts }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted-line">This family has no members yet. Add them on the <a href="/families">Families</a> page.</p>
+    {% endif %}
+</div>
+{% endif %}
 
 <!-- Charts -->
 <div class="charts-grid animate-in">
